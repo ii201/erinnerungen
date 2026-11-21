@@ -5,41 +5,56 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Erinnerungen</title>
   <meta name="description" content="Persönliche Erinnerungen mit Pop-up-Benachrichtigung – läuft komplett im Browser.">
+  <meta name="theme-color" content="#5b4cf5">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="bg-aurora" aria-hidden="true"><span></span></div>
+
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
         <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></span>
-        <span>Erinnerungen</span>
+        <span class="brand-text"><b>Erinnerungen</b><small>Alles im Blick</small></span>
       </div>
+      <div class="nav-label">Ansichten</div>
       <nav class="nav" id="nav" aria-label="Ansichten"></nav>
       <div class="sidebar-foot" id="sidebar-foot"></div>
     </aside>
 
     <main class="main">
-      <header class="topbar">
-        <div class="titles">
-          <h1 id="view-title">Heute</h1>
-          <div class="sub" id="view-sub"></div>
-        </div>
-        <label class="search">
-          <span class="sr-only">Suchen</span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-          <input id="search" type="search" placeholder="Suchen in Titeln und Bemerkungen  ( / )" autocomplete="off">
-        </label>
-      </header>
+      <div class="main-inner">
+        <header class="topbar">
+          <div class="hero">
+            <div class="eyebrow" id="view-eyebrow"></div>
+            <h1 id="view-title">Heute</h1>
+            <div class="sub" id="view-sub"></div>
+          </div>
+          <label class="search">
+            <span class="sr-only">Suchen</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input id="search" type="search" placeholder="Suchen …" autocomplete="off">
+            <kbd>/</kbd>
+          </label>
+        </header>
 
-      <div class="banners" id="banners"></div>
+        <div class="stats" id="stats"></div>
+        <div class="banners" id="banners"></div>
 
-      <form class="add" id="add-form" autocomplete="off">
-        <input type="text" id="add-title" placeholder="Neue Erinnerung hinzufügen …" aria-label="Titel der neuen Erinnerung">
-        <input type="date" id="add-date" aria-label="Datum der Erinnerung">
-        <input type="time" id="add-time" aria-label="Uhrzeit der Erinnerung">
-        <button class="btn primary" type="submit">Hinzufügen</button>
-      </form>
+        <form class="add" id="add-form" autocomplete="off">
+          <span class="add-plus" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+          <input type="text" id="add-title" placeholder="Neue Erinnerung hinzufügen …" aria-label="Titel der neuen Erinnerung">
+          <span class="add-when">
+            <input type="date" id="add-date" aria-label="Datum der Erinnerung">
+            <input type="time" id="add-time" aria-label="Uhrzeit der Erinnerung">
+          </span>
+          <button class="btn primary" type="submit">Hinzufügen</button>
+        </form>
+      </div>
 
       <div class="list" id="list" aria-live="polite"></div>
     </main>
@@ -57,13 +72,13 @@
   </dialog>
 
   <dialog id="dlg-settings">
-    <div class="dlg-head"><h2>Einstellungen</h2></div>
+    <div class="dlg-head"><span class="dlg-icon"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></span><h2>Einstellungen</h2></div>
     <div class="dlg-body" id="settings-body"></div>
     <div class="dlg-foot"><button class="btn primary" data-act="settings-close" type="button">Fertig</button></div>
   </dialog>
 
   <dialog id="dlg-import" class="dlg-wide">
-    <div class="dlg-head"><h2>Erinnerungen importieren</h2></div>
+    <div class="dlg-head"><span class="dlg-icon"><svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg></span><h2>Erinnerungen importieren</h2></div>
     <div class="dlg-body" id="imp-body"></div>
     <div class="dlg-foot" id="imp-foot"></div>
   </dialog>

@@ -62,9 +62,22 @@
       app: 'erinnerungen',
       version: 1,
       tasks: [],
-      settings: { defaultTime: '08:00', summaryEnabled: true, summaryTime: '08:00', sound: true },
+      deleted: {}, // id -> Löschzeitpunkt (damit gelöschte Einträge bei der Synchronisation nicht zurückkommen)
+      settings: { defaultTime: '08:00', summaryEnabled: true, summaryTime: '08:00', sound: true, hideNotifBanner: false },
       meta: { lastBackup: null, lastSummaryDate: null },
     };
+  }
+
+  function normalizeDeleted(obj) {
+    const out = {};
+    const cutoff = Date.now() - 180 * DAY;
+    if (obj && typeof obj === 'object') {
+      for (const [id, at] of Object.entries(obj)) {
+        const iso = validIso(at);
+        if (iso && Date.parse(iso) > cutoff) out[id] = iso;
+      }
+    }
+    return out;
   }
 
   function validIso(v) {
@@ -99,6 +112,7 @@
       app: 'erinnerungen',
       version: 1,
       tasks: Array.isArray(d.tasks) ? d.tasks.map(normalizeTask) : [],
+      deleted: normalizeDeleted(d.deleted),
       settings: { ...base.settings, ...(d.settings || {}) },
       meta: { ...base.meta, ...(d.meta || {}) },
     };
@@ -120,7 +134,7 @@
 
   let data = load();
 
-  function save() {
+  function save(opts = {}) {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(data));
       ui.storageOk = true;
@@ -129,6 +143,7 @@
       ui.storageOk = false;
       renderBanners();
     }
+    if (!opts.noSync) scheduleSync();
   }
 
   let saveTimer = null;
@@ -265,11 +280,14 @@
     const idx = data.tasks.indexOf(t);
     if (idx < 0) return;
     data.tasks.splice(idx, 1);
+    data.deleted[t.id] = nowIso();
     save();
     removeAlert(t.id);
     if (ui.selectedId === t.id) closeDetail();
     render();
     toast(`„${t.title}“ gelöscht`, () => {
+      delete data.deleted[t.id];
+      touch(t); // neuer als der Löschzeitpunkt -> bleibt auch nach Synchronisation erhalten
       data.tasks.splice(Math.min(idx, data.tasks.length), 0, t);
       save();
       render();
@@ -405,7 +423,7 @@
       else if (ts <= Date.now()) whenCls = 'due';
     }
     const meta = [];
-    if (t.done) meta.push(`<span class="chip">${ICON.check} Erledigt ${esc(fmtWhen(t.doneAt || t.updatedAt))}</span>`);
+    if (t.done) meta.push(`<span class="chip done">${ICON.check} Erledigt ${esc(fmtWhen(t.doneAt || t.updatedAt))}</span>`);
     if (ts) meta.push(`<span class="chip when ${whenCls}" title="Erinnerung">${ICON.bell} ${esc(fmtWhen(t.remindAt))}</span>`);
     if (t.notes.length) meta.push(`<span class="chip" title="Anzahl Bemerkungen">${ICON.note} ${t.notes.length}</span>`);
 
@@ -418,7 +436,7 @@
       snippet = `<span class="snippet">${esc(last.text.replace(/\s+/g, ' '))}</span>`;
     }
 
-    return `<div class="task${t.done ? ' is-done' : ''}${t.id === ui.selectedId ? ' is-selected' : ''}" data-id="${esc(t.id)}">
+    return `<div class="task${t.done ? ' is-done' : ''}${whenCls ? ` is-${whenCls}` : ''}${t.id === ui.selectedId ? ' is-selected' : ''}" data-id="${esc(t.id)}">
       <button class="check" type="button" data-act="toggle" title="${t.done ? 'Wieder öffnen' : 'Als erledigt markieren'}" aria-label="${t.done ? 'Wieder öffnen' : 'Als erledigt markieren'}">${ICON.check}</button>
       <button class="task-main" type="button" data-act="open"><span class="task-title">${highlight(t.title, terms)}</span>${meta.length ? `<span class="task-meta">${meta.join('')}</span>` : ''}${snippet}</button>
       <button class="star${t.important ? ' on' : ''}" type="button" data-act="star" title="Wichtig" aria-pressed="${t.important}">${ICON.star}</button>
@@ -426,14 +444,14 @@
   }
 
   function emptyState() {
-    if (ui.query.trim()) return `<div class="empty">${ICON.search}<strong>Nichts gefunden</strong>Keine Erinnerung enthält „${esc(ui.query.trim())}“.</div>`;
+    if (ui.query.trim()) return `<div class="empty"><div class="empty-art">${ICON.search}</div><strong>Nichts gefunden</strong>Keine Erinnerung enthält „${esc(ui.query.trim())}“.</div>`;
     const msg = {
       today: ['Für heute ist nichts fällig', 'Neue Erinnerungen oben eintragen – sie erscheinen hier am jeweiligen Tag.'],
       planned: ['Keine zukünftigen Erinnerungen', 'Alles mit einem Datum ab morgen erscheint hier.'],
       all: ['Keine offenen Erinnerungen', 'Alles erledigt. Neue Erinnerungen oben eintragen oder unten links importieren.'],
       done: ['Noch nichts erledigt', 'Erledigte Erinnerungen werden hier gesammelt und bleiben durchsuchbar.'],
     }[ui.view];
-    return `<div class="empty">${VIEWS[ui.view].icon}<strong>${msg[0]}</strong>${msg[1]}</div>`;
+    return `<div class="empty"><div class="empty-art">${VIEWS[ui.view].icon}</div><strong>${msg[0]}</strong>${msg[1]}</div>`;
   }
 
   function renderNav() {
@@ -442,12 +460,44 @@
     $('#nav').innerHTML = Object.entries(VIEWS).map(([key, v]) => {
       const alert = key === 'today' && c.overdue > 0;
       return `<button type="button" data-view="${key}" class="${ui.view === key && !ui.query.trim() ? 'active' : ''}">
-        ${v.icon}<span>${v.title}</span><span class="count${alert ? ' alert' : ''}" title="${alert ? `${c.overdue} überfällig` : ''}">${n[key] || ''}</span></button>`;
+        <span class="ico">${v.icon}</span><span>${v.title}</span><span class="count${alert ? ' alert' : ''}" title="${alert ? `${c.overdue} überfällig` : ''}">${n[key] || ''}</span></button>`;
     }).join('');
+  }
+
+  function greeting() {
+    const h = new Date().getHours();
+    if (h < 5) return 'Gute Nacht';
+    if (h < 11) return 'Guten Morgen';
+    if (h < 18) return 'Guten Tag';
+    return 'Guten Abend';
+  }
+
+  function renderStats() {
+    const el = $('#stats');
+    if (ui.query.trim() || ui.view !== 'today') { el.innerHTML = ''; return; }
+    const c = counts();
+    const sod = startOfToday();
+    const doneToday = data.tasks.filter((t) => t.done && doneTs(t) >= sod).length;
+    const weekEnd = endOfToday() + 7 * DAY;
+    const week = data.tasks.filter((t) => !t.done && remindTs(t) >= endOfToday() && remindTs(t) < weekEnd).length;
+    const total = doneToday + c.today;
+    const pct = total ? doneToday / total : 0;
+    const r = 19;
+    const circ = 2 * Math.PI * r;
+    el.innerHTML = `
+      <div class="stat hero-stat">
+        <svg class="ring" viewBox="0 0 46 46" aria-hidden="true"><circle class="track" cx="23" cy="23" r="${r}"/><circle class="bar" cx="23" cy="23" r="${r}" stroke-dasharray="${circ.toFixed(1)}" stroke-dashoffset="${(circ * (1 - pct)).toFixed(1)}"/></svg>
+        <div><b>${doneToday}<small style="font-size:16px;opacity:.7"> / ${total}</small></b><span>${total && doneToday === total ? 'Alles erledigt – stark!' : 'heute erledigt'}</span></div>
+      </div>
+      <div class="stat${c.today - c.overdue ? '' : ' muted'}"><div><b>${c.today - c.overdue}</b><span>heute fällig</span></div></div>
+      <div class="stat${c.overdue ? ' danger' : ' muted'}"><div><b>${c.overdue}</b><span>überfällig</span></div></div>
+      <button type="button" class="stat${week ? '' : ' muted'}" data-view-jump="planned"><div><b>${week}</b><span>in den nächsten 7 Tagen</span></div></button>`;
   }
 
   function renderHeader() {
     const q = ui.query.trim();
+    $('#view-eyebrow').textContent = !q && ui.view === 'today' ? greeting() : '';
+    renderStats();
     if (q) {
       $('#view-title').textContent = 'Suche';
       $('#view-sub').textContent = `Ergebnisse für „${q}“ – offen und erledigt`;
@@ -479,25 +529,30 @@
       out.push(`<div class="banner danger"><span class="grow"><b>Hinweis:</b> Die Seite ist direkt als Datei geöffnet. Pop-up-Benachrichtigungen funktionieren nur, wenn sie über eine Internetadresse (https, z. B. GitHub Pages) aufgerufen wird.</span></div>`);
     } else if (!('Notification' in window)) {
       out.push(`<div class="banner"><span class="grow">Dieser Browser unterstützt keine Windows-Benachrichtigungen. Erinnerungen erscheinen nur hier im Fenster.</span></div>`);
-    } else if (Notification.permission === 'default') {
-      out.push(`<div class="banner"><span class="grow"><b>Pop-up-Benachrichtigungen sind noch nicht aktiviert.</b> Ohne sie erscheinen Erinnerungen nur, wenn dieses Fenster im Vordergrund ist.</span><button class="btn primary" type="button" data-act="perm">Benachrichtigungen aktivieren</button></div>`);
-    } else if (Notification.permission === 'denied') {
-      out.push(`<div class="banner danger"><span class="grow"><b>Benachrichtigungen sind blockiert.</b> Links neben der Adresszeile auf das Schloss-/Regler-Symbol klicken → „Benachrichtigungen“ → „Zulassen“, dann die Seite neu laden. Erinnerungen erscheinen bis dahin nur hier im Fenster.</span></div>`);
+    } else if (Notification.permission === 'default' && !data.settings.hideNotifBanner) {
+      out.push(`<div class="banner"><span class="grow"><b>Tipp: Zusätzlich Windows-Benachrichtigungen erlauben.</b> Erinnerungen poppen immer hier in der App auf. Mit Windows-Benachrichtigung bemerkst du sie auch, wenn Outlook oder ein anderes Programm im Vordergrund ist.</span><button class="btn primary" type="button" data-act="perm">Erlauben</button><button class="btn" type="button" data-act="hide-notif">Nicht nötig</button></div>`);
+    } else if (Notification.permission === 'denied' && !data.settings.hideNotifBanner) {
+      out.push(`<div class="banner"><span class="grow"><b>Windows-Benachrichtigungen sind blockiert.</b> Erinnerungen poppen trotzdem hier in der App auf, solange der Tab offen ist. Zum Erlauben: links neben der Adresse auf das Schloss-Symbol klicken → „Benachrichtigungen“ → „Zulassen“.</span><button class="btn" type="button" data-act="hide-notif">Ausblenden</button></div>`);
+    }
+    if (ghOn() && gh.state === 'error') {
+      out.push(`<div class="banner danger"><span class="grow"><b>GitHub-Sicherung fehlgeschlagen:</b> ${esc(gh.msg)} Deine Daten sind weiterhin im Browser gespeichert.</span><button class="btn" type="button" data-act="gh-sync">Erneut versuchen</button><button class="btn" type="button" data-act="settings">Einstellungen</button></div>`);
     }
     if (!ui.storageOk) {
       out.push(`<div class="banner danger"><span class="grow"><b>Speichern im Browser ist fehlgeschlagen.</b> Bitte sofort eine Sicherung herunterladen, damit nichts verloren geht.</span><button class="btn" type="button" data-act="backup">Sicherung herunterladen</button></div>`);
     }
     const last = data.meta.lastBackup ? Date.parse(data.meta.lastBackup) : null;
-    const needBackup = data.tasks.length > 0 && (!last || Date.now() - last > BACKUP_INTERVAL_DAYS * DAY);
+    const ghFresh = ghOn() && gh.cfg.lastOk && Date.now() - Date.parse(gh.cfg.lastOk) < BACKUP_INTERVAL_DAYS * DAY;
+    const needBackup = !ghFresh && data.tasks.length > 0 && (!last || Date.now() - last > BACKUP_INTERVAL_DAYS * DAY);
     if (needBackup && !ui.backupBannerHidden) {
       const txt = last ? `Letzte Sicherung vor ${Math.floor((Date.now() - last) / DAY)} Tagen.` : 'Es wurde noch keine Sicherung erstellt.';
-      out.push(`<div class="banner"><span class="grow"><b>${txt}</b> Die Erinnerungen liegen nur in diesem Browser. Eine Sicherungsdatei schützt vor Datenverlust.</span><button class="btn primary" type="button" data-act="backup">${ICON.download} Jetzt sichern</button><button class="btn" type="button" data-act="backup-later">Später</button></div>`);
+      out.push(`<div class="banner"><span class="grow"><b>${txt}</b> Am bequemsten: die automatische GitHub-Sicherung in den Einstellungen einrichten. Oder eine Sicherungsdatei herunterladen.</span><button class="btn primary" type="button" data-act="settings">GitHub-Sicherung einrichten</button><button class="btn" type="button" data-act="backup">${ICON.download} Datei</button><button class="btn" type="button" data-act="backup-later">Später</button></div>`);
     }
     $('#banners').innerHTML = out.join('');
   }
 
   function renderFoot() {
     $('#sidebar-foot').innerHTML = `
+      <button type="button" data-act="settings" id="sync-status" class="sync-status"></button>
       <button type="button" data-act="import">${ICON.upload}<span>Importieren</span></button>
       <button type="button" data-act="backup">${ICON.download}<span>Sicherung herunterladen</span></button>
       <button type="button" data-act="settings">${ICON.settings}<span>Einstellungen</span></button>`;
@@ -853,6 +908,183 @@
   /* =====================================================================
    * Import
    * ===================================================================== */
+  /* =====================================================================
+   * Automatische Sicherung auf GitHub (privates Repository)
+   * Die Erinnerungen werden als JSON-Datei über die GitHub-API gespeichert.
+   * Jede Sicherung ist ein Commit -> komplette Versionsgeschichte gratis.
+   * ===================================================================== */
+  const GH_KEY = 'erinnerungen-github-v1';
+  const gh = { cfg: loadGh(), busy: false, again: false, timer: null, lastSig: null, state: 'off', msg: '' };
+
+  function loadGh() {
+    const base = { repo: '', token: '', path: 'erinnerungen.json', lastOk: null };
+    try { return { ...base, ...JSON.parse(localStorage.getItem(GH_KEY) || '{}') }; } catch (_) { return base; }
+  }
+  function saveGh() { try { localStorage.setItem(GH_KEY, JSON.stringify(gh.cfg)); } catch (_) { /* egal */ } }
+  const ghOn = () => !!(gh.cfg.repo && gh.cfg.token);
+  if (ghOn()) gh.state = 'idle';
+
+  const syncSig = (tasks, deleted) => JSON.stringify([tasks.map((t) => `${t.id}|${t.updatedAt}`).sort(), Object.entries(deleted || {}).sort()]);
+
+  function b64enc(s) {
+    const bytes = new TextEncoder().encode(s);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+  function b64dec(b) {
+    const bin = atob(String(b || '').replace(/\s/g, ''));
+    return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+  }
+
+  async function ghFetch(method, body) {
+    const path = gh.cfg.path.split('/').map(encodeURIComponent).join('/');
+    const url = `https://api.github.com/repos/${gh.cfg.repo}/contents/${path}`;
+    try {
+      return await fetch(url, {
+        method,
+        cache: 'no-store',
+        headers: {
+          Authorization: `Bearer ${gh.cfg.token}`,
+          Accept: 'application/vnd.github+json',
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (_) {
+      throw new Error('GitHub ist nicht erreichbar – keine Internetverbindung oder vom Firmennetz blockiert.');
+    }
+  }
+
+  async function ghError(res) {
+    let m = '';
+    try { m = (await res.json()).message || ''; } catch (_) { /* egal */ }
+    if (res.status === 401) return 'Der Zugangsschlüssel (Token) ist ungültig oder abgelaufen.';
+    if (res.status === 403) return `Keine Berechtigung – der Token braucht „Contents: Read and write“ für dieses Repository. ${m}`;
+    if (res.status === 404) return 'Repository nicht gefunden – Namen prüfen (Format: benutzer/repository) und ob der Token Zugriff darauf hat.';
+    return `GitHub meldet Fehler ${res.status}: ${m}`;
+  }
+
+  function mergeRemote(remote) {
+    const before = syncSig(data.tasks, data.deleted);
+    const deleted = { ...remote.deleted };
+    for (const [id, at] of Object.entries(data.deleted)) if (!deleted[id] || at > deleted[id]) deleted[id] = at;
+    const map = new Map(data.tasks.map((t) => [t.id, t]));
+    const longAgo = Date.now() - 60 * 60000;
+    for (const r of remote.tasks) {
+      const cur = map.get(r.id);
+      if (!cur) {
+        // z. B. nach Zurücksetzen des Browsers: alte Erinnerungen nicht alle auf einmal aufpoppen lassen
+        if (r.remindAt && Date.parse(r.remindAt) < longAgo) r.notifiedFor = r.remindAt;
+        map.set(r.id, r);
+      } else if (r.updatedAt > cur.updatedAt) {
+        if (cur.notifiedFor && cur.notifiedFor === r.remindAt) r.notifiedFor = cur.notifiedFor;
+        map.set(r.id, r);
+      }
+    }
+    data.tasks = [...map.values()].filter((t) => !(deleted[t.id] && deleted[t.id] >= t.updatedAt));
+    data.deleted = deleted;
+    if (syncSig(data.tasks, data.deleted) !== before) {
+      save({ noSync: true });
+      render();
+      if (ui.selectedId && !findTask(ui.selectedId)) closeDetail();
+      else if (ui.selectedId && !$('#detail').contains(document.activeElement)) renderDetail();
+    }
+  }
+
+  async function ghSync(force) {
+    if (!ghOn()) return;
+    if (gh.busy) { gh.again = true; return; }
+    if (!force && syncSig(data.tasks, data.deleted) === gh.lastSig) return;
+    gh.busy = true;
+    gh.state = 'busy';
+    renderSyncStatus();
+    try {
+      let ok = false;
+      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+        const res = await ghFetch('GET');
+        let remote = null;
+        let sha;
+        if (res.status === 200) {
+          const j = await res.json();
+          sha = j.sha;
+          try { remote = normalize(JSON.parse(b64dec(j.content))); } catch (_) { throw new Error('Die Sicherungsdatei auf GitHub ist beschädigt.'); }
+        } else if (res.status !== 404) throw new Error(await ghError(res));
+
+        const remoteSig = remote ? syncSig(remote.tasks, remote.deleted) : null;
+        if (remote) mergeRemote(remote);
+        const mergedSig = syncSig(data.tasks, data.deleted);
+        if (mergedSig === remoteSig) { gh.lastSig = mergedSig; ok = true; break; }
+
+        const payload = { app: 'erinnerungen', version: 1, exportedAt: nowIso(), tasks: data.tasks, deleted: data.deleted };
+        const put = await ghFetch('PUT', {
+          message: `Sicherung ${fmtStamp(nowIso())} – ${data.tasks.length} Erinnerungen`,
+          content: b64enc(JSON.stringify(payload, null, 1)),
+          ...(sha ? { sha } : {}),
+        });
+        if (put.status === 409 || put.status === 422) continue; // zwischenzeitlich geändert -> neu laden und zusammenführen
+        if (!put.ok) throw new Error(await ghError(put));
+        gh.lastSig = mergedSig;
+        ok = true;
+      }
+      if (!ok) throw new Error('Die Datei auf GitHub wurde gleichzeitig geändert. Neuer Versuch folgt automatisch.');
+      gh.cfg.lastOk = nowIso();
+      saveGh();
+      gh.state = 'ok';
+      gh.msg = '';
+    } catch (e) {
+      console.warn('GitHub-Sicherung', e);
+      gh.state = 'error';
+      gh.msg = e.message;
+    } finally {
+      gh.busy = false;
+      renderSyncStatus();
+      renderBanners();
+      if (gh.again) { gh.again = false; scheduleSync(1500); }
+    }
+  }
+
+  function scheduleSync(ms = 4000) {
+    if (!ghOn()) return;
+    clearTimeout(gh.timer);
+    gh.timer = setTimeout(() => ghSync(false), ms);
+  }
+
+  function parseRepo(v) {
+    const s = String(v || '').trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+    return /^[\w.-]+\/[\w.-]+$/.test(s) ? s : null;
+  }
+
+  function syncLabel() {
+    if (!ghOn()) return { cls: 'off', text: 'GitHub-Sicherung einrichten' };
+    if (gh.state === 'busy') return { cls: 'busy', text: 'Wird gesichert …' };
+    if (gh.state === 'error') return { cls: 'error', text: 'Sicherung fehlgeschlagen' };
+    if (gh.cfg.lastOk) {
+      const d = new Date(gh.cfg.lastOk);
+      return { cls: 'ok', text: `Gesichert · ${dayDiff(d) === 0 ? timeStr(d) + ' Uhr' : dayLabel(d)}` };
+    }
+    return { cls: 'busy', text: 'Verbinde …' };
+  }
+
+  function renderSyncStatus() {
+    const s = syncLabel();
+    const el = $('#sync-status');
+    if (el) {
+      el.className = `sync-status ${s.cls}`;
+      el.innerHTML = `<span class="sync-dot"></span><span>${esc(s.text)}</span>`;
+      el.title = gh.state === 'error' ? gh.msg : 'Automatische Sicherung auf GitHub';
+    }
+    const st = $('#gh-state');
+    if (st) st.innerHTML = ghStateHtml();
+  }
+
+  function ghStateHtml() {
+    if (!ghOn()) return '<span class="status-pill">nicht eingerichtet</span>';
+    if (gh.state === 'error') return `<span class="status-pill bad">Fehler</span> <span class="hint">${esc(gh.msg)}</span>`;
+    if (gh.state === 'busy') return '<span class="status-pill">wird gesichert …</span>';
+    return `<span class="status-pill ok">aktiv</span> <span class="hint">Letzte Sicherung: ${gh.cfg.lastOk ? esc(fmtStamp(gh.cfg.lastOk)) : '–'}</span>`;
+  }
+
   const IMPORT_FIELDS = [
     { key: 'title', label: 'Titel / Betreff *', re: /^(betreff|subject|titel|title|aufgabe|task|name|erinnerung)$/i },
     { key: 'notes', label: 'Bemerkung / Notizen', re: /^(notizen|notes|beschreibung|description|body|bemerkung(en)?|text|inhalt|details)$/i },
@@ -1117,8 +1349,12 @@
     const incoming = ui.imp.backup;
     if (mode === 'replace') {
       if (!confirm(`Alle aktuellen Erinnerungen (${data.tasks.length}) werden durch die Sicherung (${incoming.tasks.length}) ersetzt. Fortfahren?`)) return;
+      const keep = new Set(incoming.tasks.map((t) => t.id));
+      const now = nowIso();
+      data.tasks.forEach((t) => { if (!keep.has(t.id)) data.deleted[t.id] = now; });
+      incoming.tasks.forEach((t) => { t.updatedAt = now; delete data.deleted[t.id]; });
       data.tasks = incoming.tasks;
-      data.settings = incoming.settings;
+      data.settings = { ...data.settings, ...incoming.settings };
     } else {
       for (const t of incoming.tasks) {
         const cur = findTask(t.id);
@@ -1224,8 +1460,8 @@
     const last = data.meta.lastBackup ? fmtStamp(data.meta.lastBackup) : 'noch nie';
     $('#settings-body').innerHTML = `
       <div class="set-section">
-        <h3>Pop-up-Benachrichtigungen ${perm}</h3>
-        <p class="hint">Damit Erinnerungen pünktlich aufpoppen, muss diese Seite in einem Tab geöffnet bleiben (Tipp: Tab anheften – Rechtsklick auf den Tab → „Anheften“). Verpasste Erinnerungen erscheinen beim nächsten Öffnen sofort.</p>
+        <h3>Pop-ups &amp; Windows-Benachrichtigungen ${perm}</h3>
+        <p class="hint">Erinnerungen poppen hier in der App als Fenster mit Ton auf. Dafür muss die Seite in einem Tab geöffnet bleiben (Tipp: Rechtsklick auf den Tab → „Anheften“). Sind Windows-Benachrichtigungen erlaubt, erscheint zusätzlich unten rechts ein Hinweis, auch wenn ein anderes Programm im Vordergrund ist. Verpasste Erinnerungen erscheinen beim nächsten Öffnen sofort.</p>
         <div class="set-row">
           ${'Notification' in window && Notification.permission === 'default' && window.isSecureContext ? '<button class="btn primary" type="button" data-act="perm">Benachrichtigungen erlauben</button>' : ''}
           <button class="btn" type="button" data-act="test-now">Test-Pop-up jetzt</button>
@@ -1241,8 +1477,31 @@
         <div class="set-row"><label for="s-summary">Tagesübersicht anzeigen (einmal am Tag, beim ersten Öffnen ab dieser Uhrzeit)</label><input type="checkbox" id="s-summary" ${s.summaryEnabled ? 'checked' : ''}><input class="field" type="time" id="s-sumtime" value="${esc(s.summaryTime)}"></div>
       </div>
       <div class="set-section">
-        <h3>Daten &amp; Sicherung</h3>
-        <p class="hint">Alle Erinnerungen liegen nur in diesem Browser auf diesem Rechner. Letzte Sicherung: <b>${esc(last)}</b>.</p>
+        <h3>Automatische Sicherung auf GitHub</h3>
+        <div class="set-row" id="gh-state">${ghStateHtml()}</div>
+        <p class="hint">Nach jeder Änderung werden die Erinnerungen automatisch in ein <b>privates</b> GitHub-Repository gesichert, mit kompletter Versionsgeschichte. Wird der Browser zurückgesetzt, genügt es, hier dieselben Daten erneut einzutragen: Alles kommt zurück.</p>
+        <div class="set-row"><label for="gh-repo">Repository (benutzer/name)</label><input class="field wide" id="gh-repo" placeholder="z. B. ii201/erinnerungen-daten" value="${esc(gh.cfg.repo)}" autocomplete="off" spellcheck="false"></div>
+        <div class="set-row"><label for="gh-token">Zugangsschlüssel (Token)</label><input class="field wide" id="gh-token" type="password" placeholder="${gh.cfg.token ? 'gespeichert – nur zum Ändern neu eingeben' : 'github_pat_…'}" autocomplete="off" spellcheck="false"></div>
+        <div class="set-row">
+          <button class="btn primary" type="button" data-act="gh-connect">${ghOn() ? 'Speichern &amp; synchronisieren' : 'Verbinden'}</button>
+          ${ghOn() ? '<button class="btn" type="button" data-act="gh-sync">Jetzt synchronisieren</button><button class="btn danger" type="button" data-act="gh-disconnect">Trennen</button>' : ''}
+        </div>
+        <details class="howto">
+          <summary>So erstellst du den Zugangsschlüssel (einmalig, ca. 2 Minuten)</summary>
+          <ol>
+            <li>Auf <code>github.com</code> anmelden → oben rechts Profilbild → <i>Settings</i> → ganz unten <i>Developer settings</i>.</li>
+            <li><i>Personal access tokens</i> → <i>Fine-grained tokens</i> → <i>Generate new token</i>.</li>
+            <li>Name z. B. „Erinnerungen“, Ablaufdatum möglichst lang wählen.</li>
+            <li><i>Repository access</i>: <b>Only select repositories</b> → das private Daten-Repository auswählen.</li>
+            <li><i>Permissions</i> → <i>Repository permissions</i> → <b>Contents: Read and write</b>.</li>
+            <li><i>Generate token</i> → Schlüssel kopieren und oben einfügen → <i>Verbinden</i>.</li>
+          </ol>
+          <p class="hint">Der Schlüssel wird nur in diesem Browser gespeichert und darf ausschließlich dieses eine Repository lesen und schreiben. Er ist nicht in Sicherungsdateien enthalten.</p>
+        </details>
+      </div>
+      <div class="set-section">
+        <h3>Sicherungsdatei &amp; Export</h3>
+        <p class="hint">Zusätzlich oder alternativ: eine Datei herunterladen. Letzte Sicherungsdatei: <b>${esc(last)}</b>.</p>
         <div class="set-row">
           <button class="btn primary" type="button" data-act="backup">${ICON.download} Sicherung herunterladen</button>
           <button class="btn" type="button" data-act="import">${ICON.upload} Importieren / Wiederherstellen</button>
@@ -1293,17 +1552,32 @@
   /* =====================================================================
    * Ereignisse
    * ===================================================================== */
+  function animateList() {
+    const l = $('#list');
+    l.classList.remove('anim');
+    void l.offsetWidth; // Animation neu starten
+    l.classList.add('anim');
+    clearTimeout(ui.animTimer);
+    ui.animTimer = setTimeout(() => l.classList.remove('anim'), 600);
+  }
+
   function switchView(v) {
     ui.view = v;
     ui.query = '';
     $('#search').value = '';
     render();
+    animateList();
     setAddDefaults();
   }
 
   $('#nav').addEventListener('click', (e) => {
     const b = e.target.closest('[data-view]');
     if (b) switchView(b.dataset.view);
+  });
+
+  $('#stats').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-view-jump]');
+    if (b) switchView(b.dataset.viewJump);
   });
 
   $('#search').addEventListener('input', (e) => {
@@ -1317,8 +1591,10 @@
     if (!b || !row) return;
     const t = findTask(row.dataset.id);
     if (!t) return;
-    if (b.dataset.act === 'toggle') toggleDone(t);
-    else if (b.dataset.act === 'star') toggleStar(t);
+    if (b.dataset.act === 'toggle') {
+      if (t.done || row.classList.contains('completing')) toggleDone(t);
+      else { row.classList.add('completing'); setTimeout(() => toggleDone(t), 420); } // kurze Abhak-Animation
+    } else if (b.dataset.act === 'star') toggleStar(t);
     else if (b.dataset.act === 'open') {
       if (ui.selectedId === t.id) closeDetail(); else openTask(t.id);
     }
@@ -1332,6 +1608,35 @@
       case 'perm': requestPermission(); break;
       case 'backup': exportBackup(); break;
       case 'backup-later': ui.backupBannerHidden = true; renderBanners(); break;
+      case 'hide-notif': data.settings.hideNotifBanner = true; save({ noSync: true }); renderBanners(); break;
+      case 'gh-sync': ghSync(true); break;
+      case 'gh-connect': {
+        const repo = parseRepo($('#gh-repo').value);
+        const token = $('#gh-token').value.trim();
+        if (!repo) { toast('Bitte das Repository im Format benutzer/name angeben.'); $('#gh-repo').focus(); break; }
+        if (!token && !gh.cfg.token) { toast('Bitte den Zugangsschlüssel (Token) einfügen.'); $('#gh-token').focus(); break; }
+        if (repo !== gh.cfg.repo) gh.cfg.lastOk = null;
+        gh.cfg.repo = repo;
+        if (token) gh.cfg.token = token;
+        saveGh();
+        gh.lastSig = null;
+        renderSettings();
+        ghSync(true).then(() => {
+          if (gh.state === 'ok') toast('Verbunden – deine Erinnerungen werden ab jetzt automatisch auf GitHub gesichert.');
+          if ($('#dlg-settings').open) renderSettings();
+        });
+        break;
+      }
+      case 'gh-disconnect':
+        if (!confirm('GitHub-Sicherung trennen? Die Daten bleiben im Browser und auf GitHub erhalten, es wird nur nicht mehr synchronisiert.')) break;
+        gh.cfg.token = '';
+        gh.cfg.lastOk = null;
+        gh.state = 'off';
+        saveGh();
+        renderSettings();
+        renderSyncStatus();
+        renderBanners();
+        break;
       case 'csv': exportCSV(); break;
       case 'import': if ($('#dlg-settings').open) $('#dlg-settings').close(); openImport(); break;
       case 'settings': renderSettings(); $('#dlg-settings').showModal(); break;
@@ -1526,7 +1831,10 @@
     if (ui.selectedId && !ui.editingNoteId && !detail.contains(document.activeElement)) renderDetail();
   });
 
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(true); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) tick(true);
+    else if (gh.timer) { clearTimeout(gh.timer); ghSync(false); } // beim Wegklicken ausstehende Änderungen sofort sichern
+  });
   window.addEventListener('focus', () => tick(true));
 
   /* =====================================================================
@@ -1548,4 +1856,7 @@
   handleHash();
   tick(true);
   setInterval(tick, 15000);
+  renderSyncStatus();
+  ghSync(true); // beim Start Stand von GitHub holen und zusammenführen
+  setInterval(() => ghSync(true), 10 * 60000);
 })();

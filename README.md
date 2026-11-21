@@ -33,11 +33,26 @@ Verpasste Erinnerungen, etwa bei geschlossenem Browser, erscheinen beim nächste
 
 ## Wo liegen die Daten?
 
-Die Erinnerungen werden **nur im Browser dieses Rechners** gespeichert (localStorage). GitHub stellt nur das Programm bereit, die Daten werden **nicht** zu GitHub hochgeladen.
+Die Erinnerungen werden im Browser gespeichert (localStorage). Das öffentliche Repository enthält **nur das Programm**, keine Erinnerungen.
 
-- Normales „Cache leeren“ löscht sie nicht. *„Cookies und andere Websitedaten löschen“* oder ein Zurücksetzen des Browsers durch die IT dagegen schon.
-- Deshalb erinnert die App alle 7 Tage an eine **Sicherung**. Die Datei am besten auf OneDrive oder einem Netzlaufwerk ablegen.
-- Wiederherstellen: *Importieren* → Sicherungsdatei auswählen → *Zusammenführen* oder *Alles ersetzen*.
+### Automatische Sicherung auf GitHub (empfohlen)
+
+Nach jeder Änderung speichert die App die Erinnerungen automatisch als `erinnerungen.json` in einem **privaten** Repository (`ii201/erinnerungen-daten`). Jede Sicherung ist ein eigener Commit, damit ist jeder frühere Stand wiederherstellbar.
+
+Einrichtung (einmalig):
+1. Auf github.com: Profilbild → *Settings* → *Developer settings* → *Personal access tokens* → *Fine-grained tokens* → *Generate new token*.
+2. *Repository access*: **Only select repositories** → `erinnerungen-daten`.
+3. *Permissions* → *Repository permissions* → **Contents: Read and write**.
+4. Token erzeugen und kopieren.
+5. In der App: *Einstellungen* → *Automatische Sicherung auf GitHub* → Repository `ii201/erinnerungen-daten` und den Token eintragen → *Verbinden*.
+
+Wird der Browser zurückgesetzt, trägst du dieselben Daten einfach erneut ein, und alle Erinnerungen kommen zurück. Unten links in der Seitenleiste siehst du jederzeit, wann zuletzt gesichert wurde.
+Der Token liegt nur im Browser, darf nur dieses eine Repository lesen und schreiben und ist in keiner Sicherungsdatei enthalten.
+
+### Sicherungsdatei
+
+Zusätzlich lässt sich jederzeit eine Sicherungsdatei herunterladen. Ohne aktive GitHub-Sicherung erinnert die App alle 7 Tage daran.
+Wiederherstellen: *Importieren* → Sicherungsdatei auswählen → *Zusammenführen* oder *Alles ersetzen*.
 
 ## Veröffentlichen über GitHub Pages
 
