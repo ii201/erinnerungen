@@ -9,6 +9,7 @@ Es wird nichts installiert und nichts an Windows verändert.
 - **Pop-up zur Erinnerungszeit**: als Windows-Benachrichtigung und als Fenster in der App, mit Ton
 - Direkt im Pop-up: *Erledigt*, *Morgen*, *Übermorgen*, *Nächste Woche* oder *Öffnen*
 - Verschieben tageweise: Morgen, Übermorgen, nächste Woche, in 1 Woche oder auf einen Wochentag (Mo–Fr), immer zur Standard-Uhrzeit
+- Uhrzeit per Klick aus einer Liste (halbstündlich, 6–20 Uhr) oder einfach eintippen: `9`, `930`, `9:15` oder `14.45`
 - Zwei Farbschemata: *Graphit & Messing* und *Marineblau* (Vergleich unter `vorschau.html`)
 - **Bemerkungen & Verlauf**: Jede Aktualisierung wird mit Datum und Uhrzeit gespeichert
 - Ansichten: **Heute** (inkl. Überfällige), **Geplant** (Zukunft), **Alle offenen**, **Erledigt**

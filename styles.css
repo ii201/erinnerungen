@@ -360,10 +360,10 @@ button.stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
 .add input[type=text] { flex: 1; min-width: 140px; border: 0; background: none; padding: 10px 4px; font-size: 15px; outline: none; }
 .add input[type=text]::placeholder { color: var(--muted); }
 .add-when { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 11px; background: var(--surface-2); }
-.add-when input {
+.add-when input, .add-when select {
   border: 0; background: transparent; padding: 6px 8px; border-radius: 8px; color: var(--text-2); outline: none; font-size: 13px;
 }
-.add-when input:focus { background: var(--surface); box-shadow: var(--shadow-sm); }
+.add-when input:focus, .add-when select:focus { background: var(--surface); box-shadow: var(--shadow-sm); }
 
 /* Buttons */
 .btn {
@@ -652,3 +652,19 @@ dialog::backdrop { background: rgba(10, 10, 25, .45); backdrop-filter: blur(6px)
 }
 .weekdays button small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
 .weekdays button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); transform: translateY(-1px); }
+
+/* Uhrzeit-Kombifeld */
+.time-input { width: 86px; font-variant-numeric: tabular-nums; cursor: pointer; }
+.add-when .time-input { width: 64px; }
+.time-pop {
+  position: fixed; inset: auto; margin: 0; padding: 4px; max-height: 264px; overflow: auto;
+  border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface); color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+.time-pop button {
+  display: block; width: 100%; text-align: left; border: 0; background: none; padding: 7px 12px; border-radius: 8px;
+  font-size: 13.5px; font-variant-numeric: tabular-nums; color: var(--text-2);
+}
+.time-pop button:hover, .time-pop button.active { background: var(--accent-soft); color: var(--accent-text); }
+.time-pop button.on { font-weight: 700; color: var(--accent-text); }
+.time-pop button.on::after { content: "  ✓"; }

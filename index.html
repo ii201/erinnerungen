@@ -50,7 +50,7 @@
           <input type="text" id="add-title" placeholder="Neue Erinnerung hinzufügen …" aria-label="Titel der neuen Erinnerung">
           <span class="add-when">
             <input type="date" id="add-date" aria-label="Datum der Erinnerung">
-            <input type="time" id="add-time" aria-label="Uhrzeit der Erinnerung">
+            <input type="text" id="add-time" class="time-input" data-allow-empty="1" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="hh:mm" aria-label="Uhrzeit der Erinnerung">
           </span>
           <button class="btn primary" type="submit">Hinzufügen</button>
         </form>
@@ -83,6 +83,7 @@
     <div class="dlg-foot" id="imp-foot"></div>
   </dialog>
 
+  <div id="time-pop" class="time-pop" popover="manual" role="listbox" aria-label="Uhrzeit wählen"></div>
   <div id="toast" role="status"></div>
 
   <script src="app.js"></script>

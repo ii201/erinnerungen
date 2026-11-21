@@ -185,6 +185,29 @@
   function atTime(base, h, mi) { const d = new Date(base); d.setHours(h, mi, 0, 0); return d; }
   function addDays(base, n) { const d = new Date(base); d.setDate(d.getDate() + n); return d; }
 
+  /* Uhrzeit-Auswahl: nur halbe Stunden von 06:00 bis 20:00 – kurze Liste statt freier Eingabe */
+  const TIME_SLOTS = [];
+  for (let m = 6 * 60; m <= 20 * 60; m += 30) TIME_SLOTS.push(`${pad(Math.floor(m / 60))}:${pad(m % 60)}`);
+
+  // Kombifeld: Klick öffnet die Halbstunden-Liste, Eintippen geht trotzdem (9 → 09:00, 930 → 09:30, 14.45 → 14:45)
+  function timeInput(id, value, allowEmpty) {
+    return `<input type="text" class="field time-input" id="${id}" value="${esc(value || '')}"${allowEmpty ? ' data-allow-empty="1"' : ''} inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="hh:mm" aria-label="Uhrzeit">`;
+  }
+  function setTimeSelect(el, value) {
+    if (el) el.value = value || '';
+  }
+  function parseTimeInput(s) {
+    s = String(s || '').trim().replace(/\s*uhr$/i, '');
+    if (!s) return '';
+    let m = s.match(/^(\d{1,2})(?:[:.,\s](\d{1,2}))?$/);
+    if (!m) { const k = s.match(/^(\d{3,4})$/); if (k) m = [null, k[1].slice(0, -2), k[1].slice(-2)]; }
+    if (!m) return null;
+    const h = Number(m[1]);
+    const mi = m[2] == null ? 0 : Number(m[2].length === 1 ? m[2] + '0' : m[2]);
+    if (h > 23 || mi > 59) return null;
+    return `${pad(h)}:${pad(mi)}`;
+  }
+
   function combine(dateVal, timeVal) {
     if (!dateVal) return null;
     const [y, m, d] = dateVal.split('-').map(Number);
@@ -642,7 +665,7 @@
         <h3>${ICON.bell} Erinnerung</h3>
         <div class="row">
           <input class="field" type="date" id="d-date" value="${d ? dateKey(d) : ''}" aria-label="Datum">
-          <input class="field" type="time" id="d-time" value="${d ? timeStr(d) : ''}" aria-label="Uhrzeit">
+          ${timeInput('d-time', d ? timeStr(d) : '', true)}
           ${d ? `<button class="btn small" type="button" data-act="clear-remind">Entfernen</button>` : ''}
         </div>
         <div class="when-status ${statusCls}" id="d-status">${esc(status)}</div>
@@ -1494,9 +1517,9 @@
       </div>
       <div class="set-section">
         <h3>Erinnerungen</h3>
-        <div class="set-row"><label for="s-deftime">Standard-Uhrzeit (z. B. für „Morgen“ oder Termine ohne Uhrzeit)</label><input class="field" type="time" id="s-deftime" value="${esc(s.defaultTime)}"></div>
+        <div class="set-row"><label for="s-deftime">Standard-Uhrzeit (z. B. für „Morgen“ oder Termine ohne Uhrzeit)</label>${timeInput('s-deftime', s.defaultTime, false)}</div>
         <div class="set-row"><label for="s-sound">Ton abspielen, wenn eine Erinnerung fällig wird</label><input type="checkbox" id="s-sound" ${s.sound ? 'checked' : ''}></div>
-        <div class="set-row"><label for="s-summary">Tagesübersicht anzeigen (einmal am Tag, beim ersten Öffnen ab dieser Uhrzeit)</label><input type="checkbox" id="s-summary" ${s.summaryEnabled ? 'checked' : ''}><input class="field" type="time" id="s-sumtime" value="${esc(s.summaryTime)}"></div>
+        <div class="set-row"><label for="s-summary">Tagesübersicht anzeigen (einmal am Tag, beim ersten Öffnen ab dieser Uhrzeit)</label><input type="checkbox" id="s-summary" ${s.summaryEnabled ? 'checked' : ''}>${timeInput('s-sumtime', s.summaryTime, false)}</div>
       </div>
       <div class="set-section">
         <h3>Automatische Sicherung auf GitHub</h3>
@@ -1547,7 +1570,7 @@
       t = { h: nh.getHours(), mi: 0 };
       if (nh.getDate() !== now.getDate()) t = { h: 23, mi: 59 };
     }
-    $('#add-time').value = day ? `${pad(t.h)}:${pad(t.mi)}` : '';
+    setTimeSelect($('#add-time'), day ? `${pad(t.h)}:${pad(t.mi)}` : '');
   }
 
   $('#add-form').addEventListener('submit', (e) => {
@@ -1568,7 +1591,7 @@
   });
 
   $('#add-date').addEventListener('change', () => {
-    if ($('#add-date').value && !$('#add-time').value) $('#add-time').value = data.settings.defaultTime;
+    if ($('#add-date').value && !$('#add-time').value) setTimeSelect($('#add-time'), data.settings.defaultTime);
   });
 
   /* =====================================================================
@@ -1751,7 +1774,7 @@
     if (e.target.id === 'd-date' || e.target.id === 'd-time') {
       const dv = $('#d-date').value;
       let tv = $('#d-time').value;
-      if (dv && !tv) { tv = data.settings.defaultTime; $('#d-time').value = tv; }
+      if (dv && !tv) { tv = data.settings.defaultTime; setTimeSelect($('#d-time'), tv); }
       setReminder(t, dv ? combine(dv, tv) : null);
       updateDetailStatus(t);
       render();
@@ -1839,6 +1862,117 @@
       renderImport();
     }
   });
+
+  /* ---------- Uhrzeit-Kombifeld (Liste + freie Eingabe) ---------- */
+  const timePop = $('#time-pop');
+  const tp = { input: null, idx: -1, nav: false };
+  const tpItems = () => [...timePop.querySelectorAll('button')];
+  const tpOpen = () => { try { return timePop.matches(':popover-open'); } catch (_) { return !timePop.hidden; } };
+
+  function tpHighlight(i, scroll) {
+    const items = tpItems();
+    if (!items.length) return;
+    tp.idx = Math.max(0, Math.min(items.length - 1, i));
+    items.forEach((b, k) => b.classList.toggle('active', k === tp.idx));
+    if (scroll) {
+      const el = items[tp.idx];
+      timePop.scrollTop = el.offsetTop - timePop.clientHeight / 2 + el.offsetHeight / 2;
+    }
+  }
+
+  function openTimePop(input) {
+    tp.input = input;
+    tp.nav = false;
+    const cur = parseTimeInput(input.value) || '';
+    const list = [...TIME_SLOTS];
+    if (cur && !list.includes(cur)) { list.push(cur); list.sort(); }
+    timePop.innerHTML = list.map((v) => `<button type="button" role="option" data-v="${v}" class="${v === cur ? 'on' : ''}">${v} Uhr</button>`).join('');
+    const r = input.getBoundingClientRect();
+    const h = Math.min(264, list.length * 34 + 10);
+    const below = window.innerHeight - r.bottom > h + 8;
+    timePop.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 150))}px`;
+    timePop.style.top = `${below ? r.bottom + 4 : Math.max(8, r.top - h - 4)}px`;
+    timePop.style.minWidth = `${Math.max(r.width, 120)}px`;
+    try { if (tpOpen()) timePop.hidePopover(); timePop.showPopover(); } catch (_) { timePop.hidden = false; }
+    let idx = list.indexOf(cur);
+    if (idx < 0) idx = list.indexOf(data.settings.defaultTime);
+    tpHighlight(idx < 0 ? 0 : idx, true);
+  }
+
+  function closeTimePop() {
+    try { if (tpOpen()) timePop.hidePopover(); } catch (_) { timePop.hidden = true; }
+    tp.input = null;
+  }
+
+  function pickTime(v) {
+    const inp = tp.input;
+    if (!inp) return;
+    inp.value = v;
+    closeTimePop();
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  timePop.addEventListener('mousedown', (e) => e.preventDefault()); // Fokus im Eingabefeld behalten
+  timePop.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-v]');
+    if (b) pickTime(b.dataset.v);
+  });
+
+  document.addEventListener('focusin', (e) => {
+    const el = e.target;
+    if (!el.matches || !el.matches('.time-input')) return;
+    el.dataset.prev = el.value;
+    openTimePop(el);
+    setTimeout(() => { try { el.select(); } catch (_) { /* egal */ } }, 0); // Eintippen ersetzt den alten Wert
+  });
+  document.addEventListener('click', (e) => {
+    if (e.target.matches && e.target.matches('.time-input') && tp.input !== e.target) openTimePop(e.target);
+  });
+  document.addEventListener('focusout', (e) => {
+    if (e.target === tp.input) closeTimePop();
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target !== tp.input) return;
+    tp.nav = false;
+    const v = parseTimeInput(e.target.value);
+    const i = v ? tpItems().findIndex((b) => b.dataset.v >= v) : -1;
+    if (i >= 0) tpHighlight(i, true);
+  });
+  document.addEventListener('keydown', (e) => {
+    const el = e.target;
+    if (!el.matches || !el.matches('.time-input')) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!tpOpen()) openTimePop(el);
+      tp.nav = true;
+      tpHighlight(tp.idx + (e.key === 'ArrowDown' ? 1 : -1), true);
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); // im Eingabeformular nicht abschicken
+      if (tp.nav && tpItems()[tp.idx]) { pickTime(tpItems()[tp.idx].dataset.v); return; }
+      closeTimePop();
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (e.key === 'Escape' && tpOpen()) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeTimePop();
+    } else if (e.key === 'Tab') closeTimePop();
+  }, true);
+
+  // Jede Änderung eines Uhrzeit-Feldes zuerst prüfen und vereinheitlichen (vor allen anderen Listenern)
+  document.addEventListener('change', (e) => {
+    const el = e.target;
+    if (!el.matches || !el.matches('.time-input')) return;
+    const v = parseTimeInput(el.value);
+    if (v === null || (v === '' && !el.dataset.allowEmpty)) {
+      el.value = el.dataset.prev || '';
+      e.stopImmediatePropagation();
+      toast('Uhrzeit nicht erkannt – z. B. 9, 930, 9:15 oder 14.45 eingeben.');
+      return;
+    }
+    el.value = v;
+    if (v === (el.dataset.prev || '')) { e.stopImmediatePropagation(); return; }
+    el.dataset.prev = v;
+  }, true);
 
   // Tastatur
   document.addEventListener('keydown', (e) => {
