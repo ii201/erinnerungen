@@ -670,7 +670,6 @@
 
       <section class="card">
         <h3>${ICON.bell} Erinnerung</h3>
-        ${whenHeroHtml(t)}
         <div class="when-edit">
           <input class="field" type="date" id="d-date" value="${d ? dateKey(d) : ''}" aria-label="Datum">
           ${timeInput('d-time', d ? timeStr(d) : '', true)}
@@ -678,6 +677,7 @@
           <span class="grow"></span>
           <button class="snooze-toggle${ui.snoozeOpen ? ' open' : ''}" type="button" data-act="snooze-toggle" aria-expanded="${!!ui.snoozeOpen}">${ICON.calendar}Verschieben<svg viewBox="0 0 24 24" class="caret" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
         </div>
+        ${statusLineHtml(t)}
         <div class="snooze-menu" ${ui.snoozeOpen ? '' : 'hidden'}>${snoozeMenuInner(t)}</div>
       </section>
 
@@ -698,29 +698,20 @@
     if (ui.editingNoteId) setTimeout(() => { const ta = $('#d-note-edit'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }, 0);
   }
 
-  const fmtMonShort = new Intl.DateTimeFormat('de-DE', { month: 'short' });
   const fmtMonthYear = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' });
 
-  // Großes Datumsfeld („Kalenderblatt“) für den aktuellen Erinnerungstermin
-  function whenHeroHtml(t) {
-    if (!t.remindAt) {
-      return `<div class="when-hero none" id="d-when"><div class="leaf"><span>–</span><b>?</b></div>
-        <div class="when-main"><b>Keine Erinnerung</b><span>Datum unten wählen oder „Verschieben“ nutzen.</span></div></div>`;
-    }
-    const d = new Date(t.remindAt);
-    const ts = d.getTime();
-    const diff = dayDiff(d);
-    let rel;
+  // Kleine Statuszeile unter Datum/Uhrzeit
+  function statusLineHtml(t) {
+    let text = 'Keine Erinnerung gesetzt.';
     let cls = '';
-    if (t.done) { rel = 'erledigt'; cls = 'done'; }
-    else if (ts < startOfToday()) { rel = `überfällig seit ${-diff} Tag${diff === -1 ? '' : 'en'}`; cls = 'overdue'; }
-    else if (ts <= Date.now()) { rel = 'jetzt fällig'; cls = 'due'; }
-    else rel = { 0: 'heute', 1: 'morgen', 2: 'übermorgen' }[diff] || `in ${diff} Tagen`;
-    const dateTxt = (d.getFullYear() === new Date().getFullYear() ? fmtLong : fmtLongY).format(d);
-    return `<div class="when-hero ${cls}" id="d-when">
-      <div class="leaf"><span>${esc(fmtMonShort.format(d).replace('.', ''))}</span><b>${d.getDate()}</b></div>
-      <div class="when-main"><b>${esc(dateTxt)}</b><span>${timeStr(d)} Uhr<em class="rel">${esc(rel)}</em></span></div>
-    </div>`;
+    if (t.remindAt) {
+      const ts = Date.parse(t.remindAt);
+      if (t.done) text = `Erinnerung war für ${fmtWhen(t.remindAt)} Uhr geplant.`;
+      else if (ts < startOfToday()) { text = `Überfällig seit ${fmtWhen(t.remindAt)} Uhr`; cls = ' overdue'; }
+      else if (ts <= Date.now()) text = `Fällig seit ${fmtWhen(t.remindAt)} Uhr`;
+      else text = `Erinnert ${fmtWhen(t.remindAt)} Uhr`;
+    }
+    return `<div class="when-status${cls}" id="d-status">${esc(text)}</div>`;
   }
 
   function snoozeMenuInner(t) {
@@ -777,8 +768,8 @@
 
   function updateDetailStatus(t) {
     // kleine Aktualisierung ohne kompletten Neuaufbau (z. B. während Datumseingabe)
-    const el = $('#d-when');
-    if (el) el.outerHTML = whenHeroHtml(t);
+    const el = $('#d-status');
+    if (el) el.outerHTML = statusLineHtml(t);
     if (ui.snoozeOpen) renderSnoozeMenu(t);
   }
 

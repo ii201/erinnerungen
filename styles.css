@@ -644,14 +644,6 @@ dialog::backdrop { background: rgba(10, 10, 25, .45); backdrop-filter: blur(6px)
 .swatches { display: flex; gap: 6px; }
 .swatches i { width: 26px; height: 26px; border-radius: 8px; border: 1px solid rgba(0, 0, 0, .1); }
 
-/* Wochentage zum Verschieben */
-.weekdays { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 6px; }
-.weekdays button {
-  border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 7px 4px;
-  font-size: 13px; font-weight: 600; text-align: center; transition: all .15s var(--ease);
-}
-.weekdays button small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
-.weekdays button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); transform: translateY(-1px); }
 
 /* Uhrzeit-Kombifeld */
 .time-input { width: 86px; font-variant-numeric: tabular-nums; cursor: pointer; }
@@ -693,40 +685,6 @@ dialog::backdrop { background: rgba(10, 10, 25, .45); backdrop-filter: blur(6px)
 .snooze-chips button small { font-size: 11px; font-weight: 400; color: var(--muted); }
 .snooze-chips button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
 .snooze-chips.wd button { min-width: 0; }
-
-/* Großes Datumsfeld im Detailbereich */
-.when-hero {
-  display: flex; align-items: center; gap: 14px; padding: 12px; margin-bottom: 12px; border-radius: 14px;
-  background: var(--grad-soft); border: 1px solid var(--accent-soft);
-}
-.when-hero .leaf {
-  width: 58px; flex: none; border-radius: 12px; overflow: hidden; text-align: center; background: var(--surface);
-  box-shadow: var(--shadow); border: 1px solid var(--border);
-}
-.when-hero .leaf span {
-  display: block; background: var(--accent); color: var(--on-accent); font-size: 11px; font-weight: 700;
-  letter-spacing: .08em; text-transform: uppercase; padding: 3px 0;
-}
-.when-hero .leaf b {
-  display: block; font-family: var(--font-hero); font-weight: var(--hero-weight); font-size: 28px; line-height: 1;
-  padding: 7px 0 8px; color: var(--text); font-variant-numeric: tabular-nums;
-}
-.when-main { min-width: 0; }
-.when-main b { display: block; font-size: 16px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
-.when-main span { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 3px; font-size: 13.5px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.when-main .rel {
-  font-style: normal; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px;
-  background: var(--surface); color: var(--accent-text); border: 1px solid var(--accent-soft);
-}
-.when-hero.due .rel { background: var(--accent); color: var(--on-accent); border-color: transparent; }
-.when-hero.overdue { background: var(--danger-soft); border-color: transparent; }
-.when-hero.overdue .leaf span { background: var(--danger); color: #fff; }
-.when-hero.overdue .rel { background: var(--danger); color: #fff; border-color: transparent; }
-.when-hero.done { opacity: .7; }
-.when-hero.none { background: var(--surface-2); border-color: transparent; }
-.when-hero.none .leaf span { background: var(--muted); }
-.when-hero.none .leaf b { color: var(--muted); }
-.when-hero.none .when-main span { font-weight: 400; color: var(--muted); }
 
 .when-edit { display: flex; align-items: center; gap: 6px; }
 .when-edit .grow { flex: 1; }
