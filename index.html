@@ -77,6 +77,16 @@
     <div class="dlg-foot"><button class="btn primary" data-act="settings-close" type="button">Fertig</button></div>
   </dialog>
 
+  <dialog id="dlg-unlock">
+    <div class="dlg-head"><span class="dlg-icon"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><h2>Automatische Sicherung aktivieren</h2></div>
+    <form class="dlg-body" id="unlock-form" autocomplete="off">
+      <p class="hint">Damit deine Erinnerungen automatisch gesichert werden, gib bitte einmalig dein Sicherungs-Passwort ein. Danach fragt die App nicht mehr danach.</p>
+      <div class="set-row"><input class="field wide" type="password" id="unlock-pw" placeholder="Sicherungs-Passwort" autocomplete="current-password"></div>
+      <div class="error" id="unlock-err" hidden></div>
+    </form>
+    <div class="dlg-foot"><button class="btn" type="button" data-act="unlock-later">Später</button><button class="btn primary" type="submit" form="unlock-form" id="unlock-btn">Aktivieren</button></div>
+  </dialog>
+
   <dialog id="dlg-import" class="dlg-wide">
     <div class="dlg-head"><span class="dlg-icon"><svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg></span><h2>Erinnerungen importieren</h2></div>
     <div class="dlg-body" id="imp-body"></div>

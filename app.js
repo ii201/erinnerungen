@@ -560,6 +560,9 @@
     } else if (Notification.permission === 'denied' && !data.settings.hideNotifBanner) {
       out.push(`<div class="banner"><span class="grow"><b>Windows-Benachrichtigungen sind blockiert.</b> Erinnerungen poppen trotzdem hier in der App auf, solange der Tab offen ist. Zum Erlauben: links neben der Adresse auf das Schloss-Symbol klicken → „Benachrichtigungen“ → „Zulassen“.</span><button class="btn" type="button" data-act="hide-notif">Ausblenden</button></div>`);
     }
+    if (syncCfg && !ghOn()) {
+      out.push(`<div class="banner"><span class="grow"><b>Automatische Sicherung ist noch nicht aktiv.</b> Einmal das Sicherungs-Passwort eingeben, dann werden deine Erinnerungen automatisch gesichert.</span><button class="btn primary" type="button" data-act="unlock-open">Passwort eingeben</button></div>`);
+    }
     if (ghOn() && gh.state === 'error') {
       out.push(`<div class="banner danger"><span class="grow"><b>GitHub-Sicherung fehlgeschlagen:</b> ${esc(gh.msg)} Deine Daten sind weiterhin im Browser gespeichert.</span><button class="btn" type="button" data-act="gh-sync">Erneut versuchen</button><button class="btn" type="button" data-act="settings">Einstellungen</button></div>`);
     }
@@ -568,7 +571,7 @@
     }
     const last = data.meta.lastBackup ? Date.parse(data.meta.lastBackup) : null;
     const ghFresh = ghOn() && gh.cfg.lastOk && Date.now() - Date.parse(gh.cfg.lastOk) < BACKUP_INTERVAL_DAYS * DAY;
-    const needBackup = !ghFresh && data.tasks.length > 0 && (!last || Date.now() - last > BACKUP_INTERVAL_DAYS * DAY);
+    const needBackup = !ghFresh && !(syncCfg && !ghOn()) && data.tasks.length > 0 && (!last || Date.now() - last > BACKUP_INTERVAL_DAYS * DAY);
     if (needBackup && !ui.backupBannerHidden) {
       const txt = last ? `Letzte Sicherung vor ${Math.floor((Date.now() - last) / DAY)} Tagen.` : 'Es wurde noch keine Sicherung erstellt.';
       out.push(`<div class="banner"><span class="grow"><b>${txt}</b> Am bequemsten: die automatische GitHub-Sicherung in den Einstellungen einrichten. Oder eine Sicherungsdatei herunterladen.</span><button class="btn primary" type="button" data-act="settings">GitHub-Sicherung einrichten</button><button class="btn" type="button" data-act="backup">${ICON.download} Datei</button><button class="btn" type="button" data-act="backup-later">Später</button></div>`);
@@ -1043,6 +1046,74 @@
   }
   function saveGh() { try { localStorage.setItem(GH_KEY, JSON.stringify(gh.cfg)); } catch (_) { /* egal */ } }
   const ghOn = () => !!(gh.cfg.repo && gh.cfg.token);
+
+  /* ---------- Sicherung per Passwort freischalten ----------
+   * In sync-config.json liegt der GitHub-Schlüssel – verschlüsselt mit dem persönlichen Passwort
+   * (PBKDF2-SHA256 + AES-GCM). Ohne Passwort ist er nicht lesbar. Nach einmaliger Eingabe merkt sich
+   * die App den entschlüsselten Schlüssel nur in diesem Browser. */
+  let syncCfg = null;
+  const b64bytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+  async function decryptToken(cfg, pw) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: b64bytes(cfg.salt), iterations: cfg.iter, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['decrypt'],
+    );
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64bytes(cfg.iv) }, key, b64bytes(cfg.ct));
+    return new TextDecoder().decode(pt);
+  }
+
+  async function loadSyncConfig() {
+    if (ghOn() || !window.isSecureContext || !crypto.subtle) return;
+    try {
+      const res = await fetch('sync-config.json', { cache: 'no-store' });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      if (cfg && cfg.ct && cfg.repo) syncCfg = cfg;
+    } catch (_) { return; }
+    if (syncCfg && !gh.cfg.declined) openUnlock();
+    renderBanners();
+  }
+
+  function openUnlock() {
+    const dlg = $('#dlg-unlock');
+    if (!syncCfg || dlg.open) return;
+    $('#unlock-err').hidden = true;
+    $('#unlock-pw').value = '';
+    dlg.showModal();
+    setTimeout(() => $('#unlock-pw').focus(), 50);
+  }
+
+  $('#unlock-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = $('#unlock-pw').value;
+    if (!pw) { $('#unlock-pw').focus(); return; }
+    const btn = $('#unlock-btn');
+    btn.disabled = true;
+    btn.textContent = 'Prüfe …';
+    try {
+      const token = await decryptToken(syncCfg, pw);
+      gh.cfg.repo = syncCfg.repo;
+      gh.cfg.path = syncCfg.path || 'erinnerungen.json';
+      gh.cfg.token = token;
+      gh.cfg.declined = false;
+      saveGh();
+      gh.lastSig = null;
+      $('#dlg-unlock').close();
+      await ghSync(true);
+      toast(gh.state === 'ok' ? 'Automatische Sicherung ist aktiv.' : 'Passwort stimmt, aber GitHub ist gerade nicht erreichbar – siehe Hinweis oben.');
+      renderBanners();
+      renderSyncStatus();
+    } catch (_) {
+      $('#unlock-err').textContent = 'Das Passwort stimmt nicht. Bitte noch einmal versuchen.';
+      $('#unlock-err').hidden = false;
+      $('#unlock-pw').select();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Aktivieren';
+    }
+  });
   if (ghOn()) gh.state = 'idle';
 
   const syncSig = (tasks, deleted) => JSON.stringify([tasks.map((t) => `${t.id}|${t.updatedAt}`).sort(), Object.entries(deleted || {}).sort()]);
@@ -1613,7 +1684,8 @@
         <div class="set-row"><label for="gh-repo">Repository (benutzer/name)</label><input class="field wide" id="gh-repo" placeholder="z. B. ii201/erinnerungen-daten" value="${esc(gh.cfg.repo)}" autocomplete="off" spellcheck="false"></div>
         <div class="set-row"><label for="gh-token">Zugangsschlüssel (Token)</label><input class="field wide" id="gh-token" type="password" placeholder="${gh.cfg.token ? 'gespeichert – nur zum Ändern neu eingeben' : 'github_pat_…'}" autocomplete="off" spellcheck="false"></div>
         <div class="set-row">
-          <button class="btn primary" type="button" data-act="gh-connect">${ghOn() ? 'Speichern &amp; synchronisieren' : 'Verbinden'}</button>
+          ${syncCfg && !ghOn() ? '<button class="btn primary" type="button" data-act="unlock-open">Mit Sicherungs-Passwort aktivieren</button>' : ''}
+          <button class="btn${syncCfg && !ghOn() ? '' : ' primary'}" type="button" data-act="gh-connect">${ghOn() ? 'Speichern &amp; synchronisieren' : 'Verbinden'}</button>
           ${ghOn() ? '<button class="btn" type="button" data-act="gh-sync">Jetzt synchronisieren</button><button class="btn danger" type="button" data-act="gh-disconnect">Trennen</button>' : ''}
         </div>
         <details class="howto">
@@ -1763,8 +1835,11 @@
         });
         break;
       }
+      case 'unlock-open': if ($('#dlg-settings').open) $('#dlg-settings').close(); openUnlock(); break;
+      case 'unlock-later': $('#dlg-unlock').close(); renderBanners(); break;
       case 'gh-disconnect':
         if (!confirm('GitHub-Sicherung trennen? Die Daten bleiben im Browser und auf GitHub erhalten, es wird nur nicht mehr synchronisiert.')) break;
+        gh.cfg.declined = true;
         gh.cfg.token = '';
         gh.cfg.lastOk = null;
         gh.state = 'off';
@@ -2139,5 +2214,6 @@
   tick(true);
   setInterval(tick, 15000);
   ghSync(true); // beim Start Stand von GitHub holen und zusammenführen
+  loadSyncConfig(); // ggf. nach dem Sicherungs-Passwort fragen
   setInterval(() => ghSync(true), 10 * 60000);
 })();
