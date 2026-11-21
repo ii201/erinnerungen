@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "repo": "ii201/erinnerungen-daten",
+  "path": "erinnerungen.json",
+  "kdf": "PBKDF2-SHA256",
+  "iter": 600000,
+  "salt": "eCF186CELWcq+YiRUWBSYw==",
+  "iv": "oNhSumKVjS1bNzFe",
+  "ct": "bypJbN9Ptj42dNaVf2cUxTvQxLVJzbPmkysPrSollG8L2XJJW+fs55p+qjYJISL95SrrU2mMbq6M61qN0PlBQBTJookhVF5gNBqEw8Q5ByJOXUyFkiTapSJycStNY+nAJ3TZSvrJDjkiMXaC9Q==",
+  "createdAt": "2026-11-21T17:16:47.333Z"
+}
