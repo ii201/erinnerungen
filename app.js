@@ -677,6 +677,7 @@
           <span class="grow"></span>
           <button class="snooze-toggle${ui.snoozeOpen ? ' open' : ''}" type="button" data-act="snooze-toggle" aria-expanded="${!!ui.snoozeOpen}">${ICON.calendar}Verschieben<svg viewBox="0 0 24 24" class="caret" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
         </div>
+        ${ageLineHtml(t)}
         ${statusLineHtml(t)}
         <div class="snooze-menu" ${ui.snoozeOpen ? '' : 'hidden'}>${snoozeMenuInner(t)}</div>
       </section>
@@ -689,7 +690,7 @@
       </section>
 
       <div class="d-foot">
-        <span class="grow">Erstellt ${esc(fmtStamp(t.createdAt))}${t.done ? ` · Erledigt ${esc(fmtStamp(t.doneAt || t.updatedAt))}` : ''}</span>
+        <span class="grow">${t.done ? `Erledigt ${esc(fmtStamp(t.doneAt || t.updatedAt))} Uhr` : ''}</span>
         <button class="btn small danger" type="button" data-act="delete">${ICON.trash} Löschen</button>
       </div>`;
 
@@ -699,6 +700,19 @@
   }
 
   const fmtMonthYear = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' });
+
+  // Wann wurde die Erinnerung angelegt und wie lange steht sie schon im Kalender?
+  function ageLineHtml(t) {
+    const c = new Date(t.createdAt);
+    const end = t.done && (t.doneAt || t.updatedAt) ? new Date(t.doneAt || t.updatedAt) : new Date();
+    const days = Math.max(0, Math.round((startOfDay(end) - startOfDay(c)) / DAY));
+    const dTxt = `${days} Tag${days === 1 ? '' : 'en'}`;
+    let age;
+    if (t.done) age = days === 0 ? 'am selben Tag erledigt' : `war ${days} Tag${days === 1 ? '' : 'e'} offen`;
+    else age = days === 0 ? 'heute angelegt' : `seit ${dTxt} im Kalender`;
+    const dateTxt = `${fmtWeekday.format(c)}, ${pad(c.getDate())}.${pad(c.getMonth() + 1)}.${c.getFullYear()}`;
+    return `<div class="age-line" title="Erstellt ${esc(fmtStamp(t.createdAt))} Uhr">${ICON.clock}<span>Erstellt am ${esc(dateTxt)} · <b>${esc(age)}</b></span></div>`;
+  }
 
   // Kleine Statuszeile unter Datum/Uhrzeit
   function statusLineHtml(t) {

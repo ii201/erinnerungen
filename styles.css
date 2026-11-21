@@ -715,3 +715,9 @@ dialog::backdrop { background: rgba(10, 10, 25, .45); backdrop-filter: blur(6px)
 .cal-grid button[disabled] { opacity: .25; pointer-events: none; }
 .snooze-hint { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); }
 .when-edit .snooze-toggle { flex: none; }
+
+/* Erstelldatum / Alter im Detailbereich */
+.age-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.age-line svg { width: 13px; height: 13px; }
+.age-line b { font-weight: 600; color: var(--text-2); }
+.age-line + .when-status { margin-top: 3px; }
