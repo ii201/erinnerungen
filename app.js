@@ -1,0 +1,1551 @@
+/*
+ * Erinnerungen – eine kleine Erinnerungs-App, die komplett im Browser läuft.
+ * Die Daten liegen im localStorage dieses Browsers (nichts wird an einen Server geschickt).
+ * Datenmodell (version 1) ist bewusst schlicht gehalten, damit später eine Cloud-Synchronisation
+ * (Variante B) oder ein Export in andere Tools (Variante C) einfach möglich ist.
+ */
+(() => {
+  'use strict';
+
+  /* =====================================================================
+   * Grundlagen
+   * ===================================================================== */
+  const STORE_KEY = 'erinnerungen-app-v1';
+  const DAY = 86400000;
+  const BACKUP_INTERVAL_DAYS = 7;
+
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pad = (n) => String(n).padStart(2, '0');
+  const nowIso = () => new Date().toISOString();
+  const uid = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID()
+    : Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+
+  const svg = (p) => `<svg viewBox="0 0 24 24" aria-hidden="true">${p}</svg>`;
+  const ICON = {
+    sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+    calendar: svg('<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>'),
+    list: svg('<path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>'),
+    doneAll: svg('<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/>'),
+    check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
+    bell: svg('<path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>'),
+    note: svg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'),
+    star: svg('<path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/>'),
+    settings: svg('<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'),
+    upload: svg('<path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>'),
+    download: svg('<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>'),
+    close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
+    clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+    trash: svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
+    search: svg('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>'),
+  };
+
+  const ui = {
+    view: 'today',
+    query: '',
+    selectedId: null,
+    alertIds: [],
+    editingNoteId: null,
+    storageOk: true,
+    backupBannerHidden: false,
+    lastMinute: '',
+    imp: null,
+    toastTimer: null,
+  };
+
+  /* =====================================================================
+   * Speicher
+   * ===================================================================== */
+  function defaults() {
+    return {
+      app: 'erinnerungen',
+      version: 1,
+      tasks: [],
+      settings: { defaultTime: '08:00', summaryEnabled: true, summaryTime: '08:00', sound: true },
+      meta: { lastBackup: null, lastSummaryDate: null },
+    };
+  }
+
+  function validIso(v) {
+    if (!v) return null;
+    const d = new Date(v);
+    return isNaN(d) ? null : d.toISOString();
+  }
+
+  function normalizeTask(t) {
+    const notes = Array.isArray(t.notes) ? t.notes : [];
+    return {
+      id: t.id || uid(),
+      title: String(t.title || '').trim() || '(ohne Titel)',
+      remindAt: validIso(t.remindAt),
+      notifiedFor: validIso(t.notifiedFor),
+      important: !!t.important,
+      done: !!t.done,
+      doneAt: validIso(t.doneAt),
+      notes: notes
+        .filter((n) => n && String(n.text || '').trim())
+        .map((n) => ({ id: n.id || uid(), at: validIso(n.at) || nowIso(), text: String(n.text).trim() }))
+        .sort((a, b) => a.at.localeCompare(b.at)),
+      createdAt: validIso(t.createdAt) || nowIso(),
+      updatedAt: validIso(t.updatedAt) || nowIso(),
+    };
+  }
+
+  function normalize(d) {
+    const base = defaults();
+    if (!d || typeof d !== 'object') return base;
+    return {
+      app: 'erinnerungen',
+      version: 1,
+      tasks: Array.isArray(d.tasks) ? d.tasks.map(normalizeTask) : [],
+      settings: { ...base.settings, ...(d.settings || {}) },
+      meta: { ...base.meta, ...(d.meta || {}) },
+    };
+  }
+
+  function load() {
+    let raw = null;
+    try {
+      raw = localStorage.getItem(STORE_KEY);
+      return raw ? normalize(JSON.parse(raw)) : defaults();
+    } catch (e) {
+      console.error('Laden fehlgeschlagen', e);
+      // Beschädigte Daten nicht überschreiben, sondern beiseitelegen.
+      try { if (raw) localStorage.setItem(`${STORE_KEY}-defekt-${Date.now()}`, raw); } catch (_) { /* egal */ }
+      ui.storageOk = false;
+      return defaults();
+    }
+  }
+
+  let data = load();
+
+  function save() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(data));
+      ui.storageOk = true;
+    } catch (e) {
+      console.error('Speichern fehlgeschlagen', e);
+      ui.storageOk = false;
+      renderBanners();
+    }
+  }
+
+  let saveTimer = null;
+  function saveSoon() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 400);
+  }
+
+  const findTask = (id) => data.tasks.find((t) => t.id === id);
+  const touch = (t) => { t.updatedAt = nowIso(); };
+
+  /* =====================================================================
+   * Datum & Zeit
+   * ===================================================================== */
+  const dateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const timeStr = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+  const startOfToday = () => startOfDay(new Date()).getTime();
+  const endOfToday = () => { const d = startOfDay(new Date()); d.setDate(d.getDate() + 1); return d.getTime(); };
+
+  function defTime() {
+    const [h, mi] = String(data.settings.defaultTime || '08:00').split(':').map(Number);
+    return { h: h || 0, mi: mi || 0 };
+  }
+  function atTime(base, h, mi) { const d = new Date(base); d.setHours(h, mi, 0, 0); return d; }
+  function addDays(base, n) { const d = new Date(base); d.setDate(d.getDate() + n); return d; }
+
+  function combine(dateVal, timeVal) {
+    if (!dateVal) return null;
+    const [y, m, d] = dateVal.split('-').map(Number);
+    const t = timeVal ? timeVal.split(':').map(Number) : [defTime().h, defTime().mi];
+    const r = new Date(y, m - 1, d, t[0] || 0, t[1] || 0, 0, 0);
+    return isNaN(r) ? null : r;
+  }
+
+  const fmtWeekday = new Intl.DateTimeFormat('de-DE', { weekday: 'short' });
+  const fmtLong = new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  const fmtLongY = new Intl.DateTimeFormat('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  function dayDiff(d) { return Math.round((startOfDay(d) - startOfDay(new Date())) / DAY); }
+
+  function dayLabel(d) {
+    const diff = dayDiff(d);
+    if (diff === 0) return 'Heute';
+    if (diff === 1) return 'Morgen';
+    if (diff === 2) return 'Übermorgen';
+    if (diff === -1) return 'Gestern';
+    const sameYear = d.getFullYear() === new Date().getFullYear();
+    return `${fmtWeekday.format(d)}, ${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${sameYear ? '' : d.getFullYear()}`;
+  }
+  function longDay(d) {
+    const full = (d.getFullYear() === new Date().getFullYear() ? fmtLong : fmtLongY).format(d);
+    const diff = dayDiff(d);
+    const rel = { 0: 'Heute', 1: 'Morgen', 2: 'Übermorgen', '-1': 'Gestern' }[diff];
+    return rel ? `${rel} · ${full}` : full;
+  }
+  function fmtWhen(iso) { if (!iso) return ''; const d = new Date(iso); return `${dayLabel(d)}, ${timeStr(d)}`; }
+  function fmtStamp(iso) { const d = new Date(iso); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}, ${timeStr(d)}`; }
+
+  function snoozeTarget(key) {
+    const now = new Date();
+    const { h, mi } = defTime();
+    const inMin = (n) => { const d = new Date(now.getTime() + n * 60000); d.setSeconds(0, 0); return d; };
+    switch (key) {
+      case '15m': return inMin(15);
+      case '1h': return inMin(60);
+      case '3h': return inMin(180);
+      case 'tomorrow': return atTime(addDays(now, 1), h, mi);
+      case '2days': return atTime(addDays(now, 2), h, mi);
+      case 'nextweek': {
+        const dow = now.getDay(); // 0 = So
+        const delta = ((8 - dow) % 7) || 7; // nächster Montag
+        return atTime(addDays(now, delta), h, mi);
+      }
+      default: return null;
+    }
+  }
+  const SNOOZES = [
+    { key: '15m', label: '+15 Minuten' },
+    { key: '1h', label: '+1 Stunde' },
+    { key: '3h', label: '+3 Stunden' },
+    { key: 'tomorrow', label: 'Morgen' },
+    { key: '2days', label: 'Übermorgen' },
+    { key: 'nextweek', label: 'Nächste Woche' },
+  ];
+
+  /* =====================================================================
+   * Aktionen auf Erinnerungen
+   * ===================================================================== */
+  function setReminder(t, date) {
+    t.remindAt = date ? date.toISOString() : null;
+    t.notifiedFor = null; // neuer Zeitpunkt -> wieder benachrichtigen
+    touch(t);
+    save();
+  }
+
+  function snooze(t, key) {
+    const target = snoozeTarget(key);
+    if (!target) return;
+    if (t.done) { t.done = false; t.doneAt = null; }
+    setReminder(t, target);
+    removeAlert(t.id);
+    render();
+    if (ui.selectedId === t.id) renderDetail();
+    toast(`Verschoben auf ${fmtWhen(t.remindAt)}`);
+  }
+
+  function toggleDone(t) {
+    const before = { done: t.done, doneAt: t.doneAt, updatedAt: t.updatedAt };
+    t.done = !t.done;
+    t.doneAt = t.done ? nowIso() : null;
+    touch(t);
+    save();
+    removeAlert(t.id);
+    render();
+    if (ui.selectedId === t.id) renderDetail();
+    toast(t.done ? `„${t.title}“ erledigt` : `„${t.title}“ wieder geöffnet`, () => {
+      Object.assign(t, before);
+      save();
+      render();
+      if (ui.selectedId === t.id) renderDetail();
+    });
+  }
+
+  function toggleStar(t) {
+    t.important = !t.important;
+    touch(t);
+    save();
+    render();
+    if (ui.selectedId === t.id) renderDetail();
+  }
+
+  function deleteTask(t) {
+    const idx = data.tasks.indexOf(t);
+    if (idx < 0) return;
+    data.tasks.splice(idx, 1);
+    save();
+    removeAlert(t.id);
+    if (ui.selectedId === t.id) closeDetail();
+    render();
+    toast(`„${t.title}“ gelöscht`, () => {
+      data.tasks.splice(Math.min(idx, data.tasks.length), 0, t);
+      save();
+      render();
+    }, 9000);
+  }
+
+  function addNote(t, text) {
+    text = String(text || '').trim();
+    if (!text) return;
+    t.notes.push({ id: uid(), at: nowIso(), text });
+    touch(t);
+    save();
+    render();
+    renderDetail();
+  }
+
+  /* =====================================================================
+   * Ansichten
+   * ===================================================================== */
+  const VIEWS = {
+    today: { title: 'Heute', icon: ICON.sun },
+    planned: { title: 'Geplant', icon: ICON.calendar },
+    all: { title: 'Alle offenen', icon: ICON.list },
+    done: { title: 'Erledigt', icon: ICON.doneAll },
+  };
+
+  const remindTs = (t) => (t.remindAt ? Date.parse(t.remindAt) : Infinity);
+  const byRemind = (a, b) => remindTs(a) - remindTs(b) || a.createdAt.localeCompare(b.createdAt);
+  const doneTs = (t) => Date.parse(t.doneAt || t.updatedAt);
+
+  function searchTerms() {
+    return ui.query.toLowerCase().split(/\s+/).filter(Boolean);
+  }
+  function matches(t, terms) {
+    const hay = (t.title + '\n' + t.notes.map((n) => n.text).join('\n')).toLowerCase();
+    return terms.every((x) => hay.includes(x));
+  }
+
+  function groupByDay(tasks, tsFn) {
+    const groups = new Map();
+    for (const t of tasks) {
+      const d = new Date(tsFn(t));
+      const k = dateKey(d);
+      if (!groups.has(k)) groups.set(k, { title: longDay(d), items: [] });
+      groups.get(k).items.push(t);
+    }
+    return [...groups.values()];
+  }
+
+  function counts() {
+    const sod = startOfToday();
+    const eod = endOfToday();
+    let today = 0, overdue = 0, planned = 0, open = 0, done = 0;
+    for (const t of data.tasks) {
+      if (t.done) { done++; continue; }
+      open++;
+      const ts = remindTs(t);
+      if (ts < sod) { overdue++; today++; } else if (ts < eod) today++; else if (ts !== Infinity) planned++;
+    }
+    return { today, overdue, planned, open, done };
+  }
+
+  function sectionsFor(view) {
+    const sod = startOfToday();
+    const eod = endOfToday();
+    const open = data.tasks.filter((t) => !t.done).sort(byRemind);
+    const done = data.tasks.filter((t) => t.done).sort((a, b) => doneTs(b) - doneTs(a));
+
+    if (ui.query.trim()) {
+      const terms = searchTerms();
+      return [
+        { title: 'Offen', items: open.filter((t) => matches(t, terms)) },
+        { title: 'Erledigt', items: done.filter((t) => matches(t, terms)) },
+      ];
+    }
+
+    const overdue = open.filter((t) => remindTs(t) < sod);
+    switch (view) {
+      case 'today':
+        return [
+          { title: 'Überfällig', cls: 'overdue', items: overdue },
+          { title: longDay(new Date()), items: open.filter((t) => { const ts = remindTs(t); return ts >= sod && ts < eod; }) },
+        ];
+      case 'planned':
+        return groupByDay(open.filter((t) => { const ts = remindTs(t); return ts >= eod && ts !== Infinity; }), remindTs);
+      case 'all':
+        return [
+          { title: 'Überfällig', cls: 'overdue', items: overdue },
+          ...groupByDay(open.filter((t) => { const ts = remindTs(t); return ts >= sod && ts !== Infinity; }), remindTs),
+          { title: 'Ohne Termin', items: open.filter((t) => !t.remindAt) },
+        ];
+      case 'done':
+        return groupByDay(done, doneTs).map((g) => ({ ...g, title: `Erledigt ${g.title.replace(/^(Heute|Gestern) · /, (m, p) => p.toLowerCase() + ' · ')}` }));
+      default:
+        return [];
+    }
+  }
+
+  function isVisibleInView(t, view) {
+    return sectionsFor(view).some((s) => s.items.includes(t));
+  }
+
+  function bestViewFor(t) {
+    if (t.done) return 'done';
+    const ts = remindTs(t);
+    if (ts === Infinity) return 'all';
+    return ts < endOfToday() ? 'today' : 'planned';
+  }
+
+  /* =====================================================================
+   * Rendering
+   * ===================================================================== */
+  function highlight(text, terms) {
+    if (!terms.length) return esc(text);
+    const re = new RegExp(`(${terms.map(reEsc).join('|')})`, 'gi');
+    return String(text).split(re).map((p, i) => (i % 2 ? `<mark>${esc(p)}</mark>` : esc(p))).join('');
+  }
+
+  function snip(text, terms) {
+    const low = text.toLowerCase();
+    let i = terms.length ? Math.min(...terms.map((x) => { const k = low.indexOf(x); return k < 0 ? Infinity : k; })) : 0;
+    if (!isFinite(i)) i = 0;
+    const start = Math.max(0, i - 30);
+    return (start > 0 ? '…' : '') + text.slice(start, start + 140).replace(/\s+/g, ' ');
+  }
+
+  function taskRow(t) {
+    const terms = searchTerms();
+    const ts = t.remindAt ? Date.parse(t.remindAt) : null;
+    let whenCls = '';
+    if (ts && !t.done) {
+      if (ts < startOfToday()) whenCls = 'overdue';
+      else if (ts <= Date.now()) whenCls = 'due';
+    }
+    const meta = [];
+    if (t.done) meta.push(`<span class="chip">${ICON.check} Erledigt ${esc(fmtWhen(t.doneAt || t.updatedAt))}</span>`);
+    if (ts) meta.push(`<span class="chip when ${whenCls}" title="Erinnerung">${ICON.bell} ${esc(fmtWhen(t.remindAt))}</span>`);
+    if (t.notes.length) meta.push(`<span class="chip" title="Anzahl Bemerkungen">${ICON.note} ${t.notes.length}</span>`);
+
+    let snippet = '';
+    if (terms.length) {
+      const n = [...t.notes].reverse().find((x) => terms.some((k) => x.text.toLowerCase().includes(k)));
+      if (n) snippet = `<span class="snippet">${highlight(snip(n.text, terms), terms)}</span>`;
+    } else if (t.notes.length) {
+      const last = t.notes[t.notes.length - 1];
+      snippet = `<span class="snippet">${esc(last.text.replace(/\s+/g, ' '))}</span>`;
+    }
+
+    return `<div class="task${t.done ? ' is-done' : ''}${t.id === ui.selectedId ? ' is-selected' : ''}" data-id="${esc(t.id)}">
+      <button class="check" type="button" data-act="toggle" title="${t.done ? 'Wieder öffnen' : 'Als erledigt markieren'}" aria-label="${t.done ? 'Wieder öffnen' : 'Als erledigt markieren'}">${ICON.check}</button>
+      <button class="task-main" type="button" data-act="open"><span class="task-title">${highlight(t.title, terms)}</span>${meta.length ? `<span class="task-meta">${meta.join('')}</span>` : ''}${snippet}</button>
+      <button class="star${t.important ? ' on' : ''}" type="button" data-act="star" title="Wichtig" aria-pressed="${t.important}">${ICON.star}</button>
+    </div>`;
+  }
+
+  function emptyState() {
+    if (ui.query.trim()) return `<div class="empty">${ICON.search}<strong>Nichts gefunden</strong>Keine Erinnerung enthält „${esc(ui.query.trim())}“.</div>`;
+    const msg = {
+      today: ['Für heute ist nichts fällig', 'Neue Erinnerungen oben eintragen – sie erscheinen hier am jeweiligen Tag.'],
+      planned: ['Keine zukünftigen Erinnerungen', 'Alles mit einem Datum ab morgen erscheint hier.'],
+      all: ['Keine offenen Erinnerungen', 'Alles erledigt. Neue Erinnerungen oben eintragen oder unten links importieren.'],
+      done: ['Noch nichts erledigt', 'Erledigte Erinnerungen werden hier gesammelt und bleiben durchsuchbar.'],
+    }[ui.view];
+    return `<div class="empty">${VIEWS[ui.view].icon}<strong>${msg[0]}</strong>${msg[1]}</div>`;
+  }
+
+  function renderNav() {
+    const c = counts();
+    const n = { today: c.today, planned: c.planned, all: c.open, done: c.done };
+    $('#nav').innerHTML = Object.entries(VIEWS).map(([key, v]) => {
+      const alert = key === 'today' && c.overdue > 0;
+      return `<button type="button" data-view="${key}" class="${ui.view === key && !ui.query.trim() ? 'active' : ''}">
+        ${v.icon}<span>${v.title}</span><span class="count${alert ? ' alert' : ''}" title="${alert ? `${c.overdue} überfällig` : ''}">${n[key] || ''}</span></button>`;
+    }).join('');
+  }
+
+  function renderHeader() {
+    const q = ui.query.trim();
+    if (q) {
+      $('#view-title').textContent = 'Suche';
+      $('#view-sub').textContent = `Ergebnisse für „${q}“ – offen und erledigt`;
+    } else {
+      $('#view-title').textContent = VIEWS[ui.view].title;
+      $('#view-sub').textContent = {
+        today: fmtLongY.format(new Date()),
+        planned: 'Alle Erinnerungen ab morgen',
+        all: 'Alles, was noch offen ist – mit und ohne Termin',
+        done: 'Abgeschlossene Erinnerungen, neueste zuerst',
+      }[ui.view];
+    }
+    document.title = ui.alertIds.length ? `(${ui.alertIds.length}) Erinnerung fällig – Erinnerungen` : 'Erinnerungen';
+  }
+
+  function renderList() {
+    const secs = sectionsFor(ui.view).filter((s) => s.items.length);
+    const el = $('#list');
+    if (!secs.length) { el.innerHTML = emptyState(); return; }
+    el.innerHTML = secs.map((s) => `<section class="group ${s.cls || ''}">
+      <h2>${esc(s.title)} <span class="n">${s.items.length}</span></h2>
+      ${s.items.map(taskRow).join('')}
+    </section>`).join('');
+  }
+
+  function renderBanners() {
+    const out = [];
+    if (!window.isSecureContext) {
+      out.push(`<div class="banner danger"><span class="grow"><b>Hinweis:</b> Die Seite ist direkt als Datei geöffnet. Pop-up-Benachrichtigungen funktionieren nur, wenn sie über eine Internetadresse (https, z. B. GitHub Pages) aufgerufen wird.</span></div>`);
+    } else if (!('Notification' in window)) {
+      out.push(`<div class="banner"><span class="grow">Dieser Browser unterstützt keine Windows-Benachrichtigungen. Erinnerungen erscheinen nur hier im Fenster.</span></div>`);
+    } else if (Notification.permission === 'default') {
+      out.push(`<div class="banner"><span class="grow"><b>Pop-up-Benachrichtigungen sind noch nicht aktiviert.</b> Ohne sie erscheinen Erinnerungen nur, wenn dieses Fenster im Vordergrund ist.</span><button class="btn primary" type="button" data-act="perm">Benachrichtigungen aktivieren</button></div>`);
+    } else if (Notification.permission === 'denied') {
+      out.push(`<div class="banner danger"><span class="grow"><b>Benachrichtigungen sind blockiert.</b> Links neben der Adresszeile auf das Schloss-/Regler-Symbol klicken → „Benachrichtigungen“ → „Zulassen“, dann die Seite neu laden. Erinnerungen erscheinen bis dahin nur hier im Fenster.</span></div>`);
+    }
+    if (!ui.storageOk) {
+      out.push(`<div class="banner danger"><span class="grow"><b>Speichern im Browser ist fehlgeschlagen.</b> Bitte sofort eine Sicherung herunterladen, damit nichts verloren geht.</span><button class="btn" type="button" data-act="backup">Sicherung herunterladen</button></div>`);
+    }
+    const last = data.meta.lastBackup ? Date.parse(data.meta.lastBackup) : null;
+    const needBackup = data.tasks.length > 0 && (!last || Date.now() - last > BACKUP_INTERVAL_DAYS * DAY);
+    if (needBackup && !ui.backupBannerHidden) {
+      const txt = last ? `Letzte Sicherung vor ${Math.floor((Date.now() - last) / DAY)} Tagen.` : 'Es wurde noch keine Sicherung erstellt.';
+      out.push(`<div class="banner"><span class="grow"><b>${txt}</b> Die Erinnerungen liegen nur in diesem Browser. Eine Sicherungsdatei schützt vor Datenverlust.</span><button class="btn primary" type="button" data-act="backup">${ICON.download} Jetzt sichern</button><button class="btn" type="button" data-act="backup-later">Später</button></div>`);
+    }
+    $('#banners').innerHTML = out.join('');
+  }
+
+  function renderFoot() {
+    $('#sidebar-foot').innerHTML = `
+      <button type="button" data-act="import">${ICON.upload}<span>Importieren</span></button>
+      <button type="button" data-act="backup">${ICON.download}<span>Sicherung herunterladen</span></button>
+      <button type="button" data-act="settings">${ICON.settings}<span>Einstellungen</span></button>`;
+  }
+
+  function render() {
+    renderNav();
+    renderHeader();
+    renderBanners();
+    renderList();
+  }
+
+  /* ---------- Detailbereich ---------- */
+  function openTask(id, opts = {}) {
+    const t = findTask(id);
+    if (!t) return;
+    if (!ui.query.trim() && !isVisibleInView(t, ui.view)) ui.view = bestViewFor(t);
+    ui.selectedId = id;
+    ui.editingNoteId = null;
+    render();
+    renderDetail();
+    const row = document.querySelector(`.task[data-id="${CSS.escape(id)}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+    if (opts.focusNote) setTimeout(() => $('#d-note')?.focus(), 30);
+  }
+
+  function closeDetail() {
+    ui.selectedId = null;
+    ui.editingNoteId = null;
+    $('#detail').hidden = true;
+    $('#detail').innerHTML = '';
+    renderList();
+  }
+
+  function renderDetail() {
+    const el = $('#detail');
+    const t = findTask(ui.selectedId);
+    if (!t) { el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+
+    const d = t.remindAt ? new Date(t.remindAt) : null;
+    let status = 'Keine Erinnerung gesetzt.';
+    let statusCls = '';
+    if (d) {
+      const ts = d.getTime();
+      if (t.done) status = `Erinnerung war für ${fmtWhen(t.remindAt)} geplant.`;
+      else if (ts < startOfToday()) { status = `Überfällig seit ${fmtWhen(t.remindAt)}`; statusCls = 'overdue'; }
+      else if (ts <= Date.now()) status = `Fällig seit ${timeStr(d)} Uhr`;
+      else status = `Erinnert ${fmtWhen(t.remindAt)} Uhr`;
+    }
+
+    const notes = [...t.notes].reverse().map((n) => {
+      if (n.id === ui.editingNoteId) {
+        return `<li data-note="${esc(n.id)}">
+          <div class="note-time">${esc(fmtStamp(n.at))}</div>
+          <textarea class="field note-input" id="d-note-edit">${esc(n.text)}</textarea>
+          <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-act="note-save">Speichern</button><button class="btn small" type="button" data-act="note-cancel">Abbrechen</button></div>
+        </li>`;
+      }
+      return `<li data-note="${esc(n.id)}">
+        <div class="note-time">${esc(fmtStamp(n.at))}<span class="spacer"></span>
+          <button type="button" data-act="note-edit">Bearbeiten</button><button type="button" data-act="note-del">Löschen</button></div>
+        <div class="note-text">${esc(n.text)}</div>
+      </li>`;
+    }).join('');
+
+    el.innerHTML = `
+      <div class="d-head">
+        <button class="check${t.done ? ' ' : ''}" type="button" data-act="toggle" title="${t.done ? 'Wieder öffnen' : 'Als erledigt markieren'}">${ICON.check}</button>
+        <textarea class="d-title" id="d-title" rows="1" aria-label="Titel">${esc(t.title)}</textarea>
+        <button class="star${t.important ? ' on' : ''}" type="button" data-act="star" title="Wichtig">${ICON.star}</button>
+        <button class="icon-btn" type="button" data-act="close" title="Schließen (Esc)">${ICON.close}</button>
+      </div>
+
+      <section class="card">
+        <h3>${ICON.bell} Erinnerung</h3>
+        <div class="row">
+          <input class="field" type="date" id="d-date" value="${d ? dateKey(d) : ''}" aria-label="Datum">
+          <input class="field" type="time" id="d-time" value="${d ? timeStr(d) : ''}" aria-label="Uhrzeit">
+          ${d ? `<button class="btn small" type="button" data-act="clear-remind">Entfernen</button>` : ''}
+        </div>
+        <div class="when-status ${statusCls}" id="d-status">${esc(status)}</div>
+        <div class="snooze">
+          ${SNOOZES.map((s) => { const x = snoozeTarget(s.key); return `<button type="button" data-act="snooze" data-key="${s.key}">${s.label}<small>${esc(fmtWhen(x.toISOString()))}</small></button>`; }).join('')}
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>${ICON.note} Bemerkungen &amp; Verlauf</h3>
+        <textarea class="field note-input" id="d-note" placeholder="Aktualisierung erfassen … (Strg + Enter speichert)"></textarea>
+        <div class="row" style="margin-top:6px"><button class="btn small primary" type="button" data-act="note-add">Bemerkung hinzufügen</button></div>
+        ${notes ? `<ul class="notes">${notes}</ul>` : '<p class="hint">Noch keine Bemerkungen. Jede Bemerkung wird mit Datum und Uhrzeit gespeichert.</p>'}
+      </section>
+
+      <div class="d-foot">
+        <span class="grow">Erstellt ${esc(fmtStamp(t.createdAt))}${t.done ? ` · Erledigt ${esc(fmtStamp(t.doneAt || t.updatedAt))}` : ''}</span>
+        <button class="btn small danger" type="button" data-act="delete">${ICON.trash} Löschen</button>
+      </div>`;
+
+    if (ui.editingNoteId) setTimeout(() => { const ta = $('#d-note-edit'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }, 0);
+  }
+
+  function updateDetailStatus(t) {
+    // kleine Aktualisierung ohne kompletten Neuaufbau (z. B. während Datumseingabe)
+    const st = $('#d-status');
+    if (!st) return;
+    if (!t.remindAt) { st.textContent = 'Keine Erinnerung gesetzt.'; st.className = 'when-status'; return; }
+    const ts = Date.parse(t.remindAt);
+    st.className = 'when-status' + (ts < startOfToday() && !t.done ? ' overdue' : '');
+    st.textContent = ts <= Date.now() ? `Fällig seit ${fmtWhen(t.remindAt)} Uhr` : `Erinnert ${fmtWhen(t.remindAt)} Uhr`;
+  }
+
+  /* =====================================================================
+   * Toast
+   * ===================================================================== */
+  function toast(msg, undoFn, ms = 5000) {
+    const el = $('#toast');
+    el.innerHTML = `<span>${esc(msg)}</span>${undoFn ? '<button type="button">Rückgängig</button>' : ''}`;
+    el.classList.add('show');
+    clearTimeout(ui.toastTimer);
+    const hide = () => el.classList.remove('show');
+    if (undoFn) el.querySelector('button').onclick = () => { undoFn(); hide(); };
+    ui.toastTimer = setTimeout(hide, ms);
+  }
+
+  /* =====================================================================
+   * Benachrichtigungen & Pop-ups
+   * ===================================================================== */
+  let swReg = null;
+  if ('serviceWorker' in navigator && window.isSecureContext) {
+    navigator.serviceWorker.register('sw.js').then((r) => { swReg = r; }).catch((e) => console.warn('Service Worker nicht verfügbar', e));
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data && e.data.type === 'notification-action') handleNotifAction(e.data.action, e.data.id);
+    });
+  }
+
+  async function requestPermission() {
+    if (!('Notification' in window)) return;
+    try { await Notification.requestPermission(); } catch (_) { /* ignorieren */ }
+    renderBanners();
+    if ($('#dlg-settings').open) renderSettings();
+    if (Notification.permission === 'granted') notify('Benachrichtigungen sind aktiv', { body: 'So sehen deine Erinnerungen aus.', tag: 'welcome' });
+  }
+
+  async function notify(title, opts = {}) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return false;
+    const base = {
+      body: opts.body || '',
+      tag: opts.tag || undefined,
+      renotify: !!opts.tag,
+      requireInteraction: true, // bleibt stehen, bis man reagiert – wie bei To Do
+      icon: 'icon.svg',
+      data: { id: opts.id || null },
+    };
+    try {
+      const reg = swReg || (navigator.serviceWorker && await navigator.serviceWorker.getRegistration());
+      if (reg && reg.showNotification) {
+        const o = { ...base };
+        if (opts.id) o.actions = [{ action: 'done', title: 'Erledigt' }, { action: 'snooze', title: 'In 1 Std. erneut' }];
+        await reg.showNotification(title, o);
+        return true;
+      }
+    } catch (e) { console.warn('showNotification fehlgeschlagen, nutze Fallback', e); }
+    try {
+      const n = new Notification(title, base);
+      n.onclick = () => { window.focus(); if (opts.id) openTask(opts.id); n.close(); };
+      return true;
+    } catch (e) { console.warn('Notification fehlgeschlagen', e); return false; }
+  }
+
+  async function closeSystemNotification(id) {
+    try {
+      const reg = swReg || (navigator.serviceWorker && await navigator.serviceWorker.getRegistration());
+      if (!reg || !reg.getNotifications) return;
+      (await reg.getNotifications({ tag: `task-${id}` })).forEach((n) => n.close());
+    } catch (_) { /* egal */ }
+  }
+
+  function handleNotifAction(action, id) {
+    const t = id && findTask(id);
+    if (!t) { window.focus(); return; }
+    if (action === 'done') { if (!t.done) toggleDone(t); }
+    else if (action === 'snooze') snooze(t, '1h');
+    else openTask(id);
+  }
+
+  /* ---------- Ton ---------- */
+  let audioCtx = null;
+  function unlockAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (_) { /* ohne Ton */ }
+  }
+  document.addEventListener('pointerdown', unlockAudio);
+  document.addEventListener('keydown', unlockAudio);
+
+  function chime() {
+    if (!data.settings.sound || !audioCtx || audioCtx.state !== 'running') return;
+    const t0 = audioCtx.currentTime;
+    [784, 1047, 1319].forEach((f, i) => {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      const t = t0 + i * 0.16;
+      o.type = 'sine';
+      o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t);
+      o.stop(t + 0.75);
+    });
+  }
+
+  /* ---------- Pop-up im Fenster ---------- */
+  function removeAlert(id) {
+    const i = ui.alertIds.indexOf(id);
+    if (i >= 0) ui.alertIds.splice(i, 1);
+    closeSystemNotification(id);
+    if ($('#dlg-alert').open) renderAlert();
+    renderHeader();
+  }
+
+  function renderAlert() {
+    ui.alertIds = ui.alertIds.filter((id) => { const t = findTask(id); return t && !t.done; });
+    const dlg = $('#dlg-alert');
+    if (!ui.alertIds.length) { if (dlg.open) dlg.close(); return; }
+    dlg.querySelector('h2').textContent = ui.alertIds.length === 1 ? 'Erinnerung' : `${ui.alertIds.length} Erinnerungen`;
+    $('#alert-body').innerHTML = ui.alertIds.map((id) => {
+      const t = findTask(id);
+      const last = t.notes[t.notes.length - 1];
+      return `<div class="alert-item" data-id="${esc(t.id)}">
+        <div class="alert-title">${t.important ? '★ ' : ''}${esc(t.title)}</div>
+        <div class="alert-when">${esc(fmtWhen(t.remindAt))} Uhr</div>
+        ${last ? `<div class="alert-note">Letzte Bemerkung (${esc(fmtStamp(last.at))}): ${esc(last.text)}</div>` : ''}
+        <div class="alert-actions">
+          <button class="btn primary small" type="button" data-act="a-done">${ICON.check} Erledigt</button>
+          <button class="btn small" type="button" data-act="a-snooze" data-key="15m">+15 Min</button>
+          <button class="btn small" type="button" data-act="a-snooze" data-key="1h">+1 Std</button>
+          <button class="btn small" type="button" data-act="a-snooze" data-key="tomorrow">Morgen</button>
+          <button class="btn small" type="button" data-act="a-snooze" data-key="nextweek">Nächste Woche</button>
+          <button class="btn small" type="button" data-act="a-open">Öffnen / Bemerkung</button>
+        </div>
+      </div>`;
+    }).join('');
+    if (!dlg.open) dlg.showModal();
+  }
+
+  function fireReminders(list) {
+    for (const t of list) if (!ui.alertIds.includes(t.id)) ui.alertIds.push(t.id);
+    renderAlert();
+    renderHeader();
+    chime();
+    if (list.length <= 3) {
+      list.forEach((t) => {
+        const last = t.notes[t.notes.length - 1];
+        notify(t.title, { id: t.id, tag: `task-${t.id}`, body: `Erinnerung · ${fmtWhen(t.remindAt)} Uhr${last ? `\n${last.text.slice(0, 120)}` : ''}` });
+      });
+    } else {
+      notify(`${list.length} Erinnerungen fällig`, { tag: 'sammel', body: list.slice(0, 5).map((t) => `• ${t.title}`).join('\n') });
+    }
+  }
+
+  function checkDue() {
+    const now = Date.now();
+    const fresh = [];
+    for (const t of data.tasks) {
+      if (t.done || !t.remindAt) continue;
+      if (Date.parse(t.remindAt) <= now && t.notifiedFor !== t.remindAt) {
+        t.notifiedFor = t.remindAt;
+        fresh.push(t);
+      }
+    }
+    if (fresh.length) {
+      save();
+      fireReminders(fresh.sort(byRemind));
+    }
+  }
+
+  function dailySummary() {
+    const s = data.settings;
+    if (!s.summaryEnabled) return;
+    const now = new Date();
+    const key = dateKey(now);
+    if (data.meta.lastSummaryDate === key) return;
+    const [h, mi] = String(s.summaryTime || '08:00').split(':').map(Number);
+    if (now < atTime(now, h || 0, mi || 0)) return;
+    data.meta.lastSummaryDate = key;
+    save();
+    const c = counts();
+    if (!c.today) return;
+    const list = data.tasks.filter((t) => !t.done && remindTs(t) < endOfToday()).sort(byRemind);
+    const head = `Heute: ${c.today} Erinnerung${c.today === 1 ? '' : 'en'}${c.overdue ? ` (${c.overdue} überfällig)` : ''}`;
+    notify(head, { tag: 'tagesuebersicht', body: list.slice(0, 6).map((t) => `• ${t.title}`).join('\n') + (list.length > 6 ? `\n… und ${list.length - 6} weitere` : '') });
+    toast(head);
+  }
+
+  function tick(force) {
+    checkDue();
+    dailySummary();
+    const now = new Date();
+    const m = dateKey(now) + timeStr(now);
+    if (force === true || m !== ui.lastMinute) {
+      const dayChanged = ui.lastMinute && ui.lastMinute.slice(0, 10) !== m.slice(0, 10);
+      ui.lastMinute = m;
+      render();
+      if (dayChanged) setAddDefaults();
+    }
+  }
+
+  /* =====================================================================
+   * Sicherung & Export
+   * ===================================================================== */
+  function download(name, content, type) {
+    const blob = new Blob([content], { type });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  }
+
+  function exportBackup() {
+    data.meta.lastBackup = nowIso();
+    save();
+    download(`erinnerungen-sicherung-${dateKey(new Date())}.json`, JSON.stringify({ ...data, exportedAt: nowIso() }, null, 2), 'application/json');
+    renderBanners();
+    if ($('#dlg-settings').open) renderSettings();
+    toast('Sicherung heruntergeladen – am besten auf OneDrive oder einem Laufwerk ablegen.');
+  }
+
+  function exportCSV() {
+    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const head = ['Titel', 'Erinnerung Datum', 'Erinnerung Uhrzeit', 'Wichtig', 'Erledigt', 'Erledigt am', 'Bemerkungen', 'Erstellt am'];
+    const rows = [...data.tasks].sort(byRemind).map((t) => {
+      const d = t.remindAt ? new Date(t.remindAt) : null;
+      return [
+        t.title,
+        d ? `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}` : '',
+        d ? timeStr(d) : '',
+        t.important ? 'Ja' : 'Nein',
+        t.done ? 'Ja' : 'Nein',
+        t.done ? fmtStamp(t.doneAt || t.updatedAt) : '',
+        t.notes.map((n) => `[${fmtStamp(n.at)}] ${n.text}`).join('\n'),
+        fmtStamp(t.createdAt),
+      ].map(q).join(';');
+    });
+    download(`erinnerungen-${dateKey(new Date())}.csv`, '﻿' + [head.map(q).join(';'), ...rows].join('\r\n'), 'text/csv;charset=utf-8');
+  }
+
+  /* =====================================================================
+   * Import
+   * ===================================================================== */
+  const IMPORT_FIELDS = [
+    { key: 'title', label: 'Titel / Betreff *', re: /^(betreff|subject|titel|title|aufgabe|task|name|erinnerung)$/i },
+    { key: 'notes', label: 'Bemerkung / Notizen', re: /^(notizen|notes|beschreibung|description|body|bemerkung(en)?|text|inhalt|details)$/i },
+    { key: 'remDate', label: 'Erinnerungsdatum', re: /(erinnerungsdatum|reminder ?date|erinnerung datum)/i },
+    { key: 'remTime', label: 'Erinnerungszeit', re: /(erinnerungszeit|reminder ?time|erinnerung uhrzeit)/i },
+    { key: 'dueDate', label: 'Fälligkeitsdatum', re: /(fällig|due ?date|^due$|fälligkeit|^datum$|^date$)/i },
+    { key: 'doneDate', label: 'Erledigt am', re: /(erledigt am|date ?completed|completed ?date|abgeschlossen am)/i },
+    { key: 'status', label: 'Status / Erledigt', re: /^(status|erledigt|completed|done|% erledigt|% complete)$/i },
+    { key: 'priority', label: 'Priorität / Wichtig', re: /(priorität|priority|wichtig|importance)/i },
+  ];
+
+  function parseDateFlexible(s) {
+    s = String(s || '').trim();
+    if (!s) return null;
+    let m, y, mo, d, h = null, mi = null;
+    if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s](\d{1,2}):(\d{2}))?/))) {
+      if (/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s)) {
+        const dt = new Date(s);
+        if (!isNaN(dt)) return { y: dt.getFullYear(), mo: dt.getMonth() + 1, d: dt.getDate(), h: dt.getHours(), mi: dt.getMinutes() };
+      }
+      y = +m[1]; mo = +m[2]; d = +m[3];
+      if (m[4] != null) { h = +m[4]; mi = +m[5]; }
+    } else if ((m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2,4})?(?:[,\s]+(\d{1,2})[:.](\d{2}))?/))) {
+      d = +m[1]; mo = +m[2]; y = m[3] ? +m[3] : new Date().getFullYear();
+      if (m[4] != null) { h = +m[4]; mi = +m[5]; }
+    } else if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:[,\s]+(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?)?/))) {
+      const a = +m[1], b = +m[2];
+      if (a > 12) { d = a; mo = b; } else { mo = a; d = b; } // Outlook (englisch): Monat/Tag/Jahr
+      y = +m[3];
+      if (m[4] != null) {
+        h = +m[4]; mi = +m[5];
+        if (m[6]) { const pm = /p/i.test(m[6]); if (pm && h < 12) h += 12; if (!pm && h === 12) h = 0; }
+      }
+    } else return null;
+    if (y < 100) y += 2000;
+    if (y < 1971 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    if (h != null && (h > 23 || mi > 59)) { h = null; mi = null; }
+    return { y, mo, d, h, mi };
+  }
+
+  function parseTimeFlexible(s) {
+    const m = String(s || '').match(/(\d{1,2})[:.](\d{2})(?::\d{2})?\s*([AaPp][Mm])?/);
+    if (!m) return null;
+    let h = +m[1];
+    const mi = +m[2];
+    if (m[3]) { const pm = /p/i.test(m[3]); if (pm && h < 12) h += 12; if (!pm && h === 12) h = 0; }
+    if (h > 23 || mi > 59) return null;
+    return { h, mi };
+  }
+
+  function candidateFromFields(f) {
+    const title = String(f.title || '').replace(/\s+/g, ' ').trim();
+    if (!title) return null;
+    let remind = null;
+    const rd = parseDateFlexible(f.remDate);
+    if (rd) {
+      const tm = parseTimeFlexible(f.remTime) || (rd.h != null ? { h: rd.h, mi: rd.mi } : defTime());
+      remind = new Date(rd.y, rd.mo - 1, rd.d, tm.h, tm.mi);
+    }
+    if (!remind) {
+      const dd = parseDateFlexible(f.dueDate);
+      if (dd) {
+        const tm = dd.h != null && (dd.h || dd.mi) ? { h: dd.h, mi: dd.mi } : defTime();
+        remind = new Date(dd.y, dd.mo - 1, dd.d, tm.h, tm.mi);
+      }
+    }
+    const dn = parseDateFlexible(f.doneDate);
+    const done = /erledigt|abgeschlossen|completed|^done$|^100|^ja$|^yes$|^true$|^x$|^wahr$/i.test(String(f.status || '').trim()) || !!dn;
+    const doneAt = done ? (dn ? new Date(dn.y, dn.mo - 1, dn.d, dn.h ?? 12, dn.mi ?? 0).toISOString() : nowIso()) : null;
+    const noteText = String(f.notes || '').replace(/\r\n/g, '\n').trim();
+    return {
+      title,
+      remindAt: remind && !isNaN(remind) ? remind.toISOString() : null,
+      done,
+      doneAt,
+      important: /hoch|high|wichtig|important|^ja$|^yes$|^true$/i.test(String(f.priority || '').trim()),
+      notes: noteText ? [{ text: noteText, at: nowIso() }] : [],
+    };
+  }
+
+  function parseCSV(text) {
+    const first = text.split(/\r?\n/, 1)[0];
+    const cnt = (ch) => first.split(ch).length - 1;
+    const delim = ['\t', ';', ','].reduce((a, b) => (cnt(b) > cnt(a) ? b : a));
+    const rows = [];
+    let row = [], f = '', q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) {
+        if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; }
+        else f += c;
+      } else if (c === '"' && f === '') q = true;
+      else if (c === delim) { row.push(f); f = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        row.push(f); rows.push(row); row = []; f = '';
+      } else f += c;
+    }
+    if (f !== '' || row.length) { row.push(f); rows.push(row); }
+    return rows.filter((r) => r.some((x) => x.trim() !== ''));
+  }
+
+  function autoMap(headers) {
+    const used = new Set();
+    const map = {};
+    for (const fld of IMPORT_FIELDS) {
+      let idx = -1;
+      if (fld.key === 'status') idx = headers.findIndex((h, i) => !used.has(i) && /^status$/i.test(h.trim()));
+      if (idx < 0) idx = headers.findIndex((h, i) => !used.has(i) && fld.re.test(h.trim()));
+      map[fld.key] = idx;
+      if (idx >= 0) used.add(idx);
+    }
+    if (map.title < 0) map.title = 0;
+    return map;
+  }
+
+  function fromGraph(it) {
+    if (!it || typeof it !== 'object' || !it.title) return null;
+    const g = (dt) => {
+      if (!dt || !dt.dateTime) return null;
+      let s = String(dt.dateTime).replace(/(\.\d{3})\d+/, '$1');
+      if (!/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s) && (!dt.timeZone || /^(utc|gmt)$/i.test(dt.timeZone))) s += 'Z';
+      const d = new Date(s);
+      return isNaN(d) ? null : d;
+    };
+    let remind = it.isReminderOn !== false ? g(it.reminderDateTime) : null;
+    if (!remind) {
+      const due = g(it.dueDateTime);
+      if (due) { const { h, mi } = defTime(); remind = new Date(due.getFullYear(), due.getMonth(), due.getDate(), h, mi); }
+    }
+    let body = it.body && it.body.content ? String(it.body.content) : '';
+    if (it.body && /html/i.test(it.body.contentType || '')) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = body.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n');
+      body = tmp.textContent || '';
+    }
+    body = body.replace(/\r\n/g, '\n').trim();
+    const created = g({ dateTime: it.createdDateTime, timeZone: 'UTC' });
+    const done = it.status === 'completed';
+    const doneAt = done ? (g(it.completedDateTime) || new Date()) : null;
+    return {
+      title: String(it.title).trim(),
+      remindAt: remind ? remind.toISOString() : null,
+      done,
+      doneAt: doneAt ? doneAt.toISOString() : null,
+      important: it.importance === 'high',
+      notes: body ? [{ text: body, at: (created || new Date()).toISOString() }] : [],
+      createdAt: created ? created.toISOString() : undefined,
+    };
+  }
+
+  function fromTextLine(line) {
+    let s = line.replace(/^\s*(?:[-*•–○●☐☑✓✔]|\[[ xX]?\]|\d+[.)])\s+/, '').trim();
+    if (!s) return null;
+    const done = /^\s*(?:\[[xX]\]|☑|✓|✔)/.test(line);
+    let remind = null;
+    const dm = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{4}|\d{2}(?!\d))?/);
+    if (dm) {
+      const p = parseDateFlexible(dm[0]);
+      if (p) {
+        const tm = s.match(/(\d{1,2}):(\d{2})(?:\s*Uhr)?/);
+        const t = tm ? { h: +tm[1], mi: +tm[2] } : defTime();
+        if (t.h <= 23 && t.mi <= 59) {
+          remind = new Date(p.y, p.mo - 1, p.d, t.h, t.mi);
+          s = s.replace(dm[0], ' ');
+          if (tm) s = s.replace(tm[0], ' ');
+        }
+      }
+    }
+    s = s.replace(/\s{2,}/g, ' ').replace(/(?:\s+(?:am|um|bis|ab|-|–|,))+\s*$/i, '').replace(/[\s,;:–-]+$/, '').trim();
+    return { title: s || line.trim(), remindAt: remind ? remind.toISOString() : null, done, doneAt: done ? nowIso() : null, important: false, notes: [] };
+  }
+
+  async function readFileText(file) {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    if (buf[0] === 0xff && buf[1] === 0xfe) return new TextDecoder('utf-16le').decode(buf);
+    if (buf[0] === 0xfe && buf[1] === 0xff) return new TextDecoder('utf-16be').decode(buf);
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+    catch (_) { return new TextDecoder('windows-1252').decode(buf); } // ältere Outlook-Exporte (ANSI)
+  }
+
+  function analyzeImport(text, fileName = '') {
+    const s = ui.imp;
+    s.error = '';
+    const trimmed = String(text || '').replace(/^﻿/, '').trim();
+    if (!trimmed) { s.error = 'Es wurde nichts eingefügt oder ausgewählt.'; return; }
+
+    if (/^[[{]/.test(trimmed)) {
+      let j;
+      try { j = JSON.parse(trimmed); } catch (_) { s.error = 'Die JSON-Daten konnten nicht gelesen werden. Bitte die komplette Antwort kopieren.'; return; }
+      if (j && j.app === 'erinnerungen' && Array.isArray(j.tasks)) {
+        s.step = 'backup';
+        s.backup = normalize(j);
+        s.backupDate = j.exportedAt || j.meta?.lastBackup || null;
+        return;
+      }
+      const items = Array.isArray(j) ? j : Array.isArray(j?.value) ? j.value : Array.isArray(j?.tasks) ? j.tasks : null;
+      if (!items) { s.error = 'In den JSON-Daten wurden keine Aufgaben gefunden.'; return; }
+      if (items.length && items.every((x) => x && x.displayName && !x.title)) {
+        s.error = 'Das sind die To-Do-Listen, nicht die Aufgaben. Bitte im Graph Explorer zusätzlich die Aufgaben einer Liste abrufen (siehe Anleitung unten).';
+        return;
+      }
+      s.kind = 'json';
+      s.cands = items.map(fromGraph).filter(Boolean);
+      s.more = !!j?.['@odata.nextLink'];
+      s.step = 'preview';
+      return;
+    }
+
+    const rows = parseCSV(trimmed);
+    const looksCsv = /\.csv$/i.test(fileName) || (rows.length >= 2 && rows[0].length >= 2 &&
+      rows.filter((r) => r.length === rows[0].length).length >= rows.length * 0.8 &&
+      rows[0].some((h) => IMPORT_FIELDS.some((f) => f.re.test(h.trim()))));
+    if (looksCsv && rows.length >= 2) {
+      s.kind = 'csv';
+      s.headers = rows[0].map((h) => h.trim());
+      s.rows = rows.slice(1);
+      s.mapping = autoMap(s.headers);
+      buildCsvCands();
+      s.step = 'preview';
+      return;
+    }
+
+    s.kind = 'text';
+    s.cands = trimmed.split(/\r?\n/).map(fromTextLine).filter(Boolean);
+    s.step = 'preview';
+  }
+
+  function buildCsvCands() {
+    const s = ui.imp;
+    const get = (row, key) => (s.mapping[key] >= 0 ? row[s.mapping[key]] ?? '' : '');
+    s.cands = s.rows.map((r) => {
+      const f = {};
+      IMPORT_FIELDS.forEach((x) => { f[x.key] = get(r, x.key); });
+      return candidateFromFields(f);
+    }).filter(Boolean);
+  }
+
+  const taskSig = (t) => `${t.title.trim().toLowerCase()}|${t.remindAt || ''}`;
+
+  function commitImport() {
+    const s = ui.imp;
+    const existing = new Set(data.tasks.map(taskSig));
+    let added = 0, skipped = 0;
+    for (const c of s.cands) {
+      if (!s.includeDone && c.done) continue;
+      const t = normalizeTask({ ...c, id: uid(), createdAt: c.createdAt || nowIso(), updatedAt: nowIso() });
+      if (existing.has(taskSig(t))) { skipped++; continue; }
+      // Vergangene Erinnerungen nicht alle auf einmal aufpoppen lassen – sie stehen unter „Überfällig“.
+      if (t.remindAt && Date.parse(t.remindAt) <= Date.now()) t.notifiedFor = t.remindAt;
+      data.tasks.push(t);
+      existing.add(taskSig(t));
+      added++;
+    }
+    save();
+    $('#dlg-import').close();
+    render();
+    toast(`${added} Erinnerung${added === 1 ? '' : 'en'} importiert${skipped ? ` · ${skipped} bereits vorhanden, übersprungen` : ''}`);
+  }
+
+  function restoreBackup(mode) {
+    const incoming = ui.imp.backup;
+    if (mode === 'replace') {
+      if (!confirm(`Alle aktuellen Erinnerungen (${data.tasks.length}) werden durch die Sicherung (${incoming.tasks.length}) ersetzt. Fortfahren?`)) return;
+      data.tasks = incoming.tasks;
+      data.settings = incoming.settings;
+    } else {
+      for (const t of incoming.tasks) {
+        const cur = findTask(t.id);
+        if (!cur) data.tasks.push(t);
+        else if (t.updatedAt > cur.updatedAt) Object.assign(cur, t);
+      }
+    }
+    // Bereits vergangene Erinnerungen nicht erneut aufpoppen lassen
+    data.tasks.forEach((t) => { if (t.remindAt && Date.parse(t.remindAt) <= Date.now()) t.notifiedFor = t.remindAt; });
+    save();
+    $('#dlg-import').close();
+    closeDetail();
+    render();
+    toast(mode === 'replace' ? 'Sicherung wiederhergestellt' : 'Sicherung zusammengeführt');
+  }
+
+  function openImport() {
+    ui.imp = { step: 1, includeDone: true, error: '' };
+    renderImport();
+    $('#dlg-import').showModal();
+  }
+
+  function renderImport() {
+    const s = ui.imp;
+    const body = $('#imp-body');
+    const foot = $('#imp-foot');
+
+    if (s.step === 1) {
+      body.innerHTML = `
+        <p class="hint">Möglich sind: CSV-Export aus Outlook (Ordner „Aufgaben“), JSON aus dem Microsoft Graph Explorer (To Do), eine Sicherungsdatei dieser App oder einfacher Text mit einer Erinnerung pro Zeile.</p>
+        <label class="file-drop"><input type="file" id="imp-file" accept=".csv,.json,.txt,text/csv,application/json,text/plain">${ICON.upload}<span>Datei auswählen oder hierher ziehen</span></label>
+        <div class="or">– oder Text bzw. JSON hier einfügen –</div>
+        <textarea class="field" id="imp-text" placeholder="Angebot Müller nachfassen 24.11.2026 09:00&#10;Rechnung Firma X prüfen 25.11.2026&#10;Lieferschein ablegen"></textarea>
+        ${s.error ? `<div class="error">${esc(s.error)}</div>` : ''}
+        <details class="howto">
+          <summary>Wie bekomme ich meine Erinnerungen aus Microsoft To Do heraus?</summary>
+          <p><b>Weg 1 – klassisches Outlook (am einfachsten, falls vorhanden):</b> To-Do-Aufgaben erscheinen in Outlook im Bereich „Aufgaben“.</p>
+          <ol>
+            <li>Outlook öffnen → <i>Datei</i> → <i>Öffnen und Exportieren</i> → <i>Importieren/Exportieren</i>.</li>
+            <li><i>In Datei exportieren</i> → <i>Kommagetrennte Werte (CSV)</i>.</li>
+            <li>Den Ordner <i>Aufgaben</i> (bzw. die gewünschte To-Do-Liste) auswählen und speichern.</li>
+            <li>Die CSV-Datei hier oben auswählen. Die Spalten werden automatisch erkannt.</li>
+          </ol>
+          <p><b>Weg 2 – Microsoft Graph Explorer (nur im Browser):</b></p>
+          <ol>
+            <li><code>developer.microsoft.com/graph/graph-explorer</code> öffnen und mit dem Firmenkonto anmelden.</li>
+            <li>Abfrage <code>GET https://graph.microsoft.com/v1.0/me/todo/lists</code> ausführen und bei der gewünschten Liste die <code>id</code> kopieren.<br>(Fragt der Explorer nach der Berechtigung „Tasks.Read“, zustimmen. Blockiert die Firmen-IT das, bleibt Weg 1 oder 3.)</li>
+            <li>Abfrage <code>GET https://graph.microsoft.com/v1.0/me/todo/lists/<i>ID</i>/tasks?$top=999</code> ausführen.</li>
+            <li>Die komplette Antwort (Response preview) kopieren und hier einfügen. Für jede Liste wiederholen.</li>
+          </ol>
+          <p><b>Weg 3 – von Hand:</b> Erinnerungen als Text einfügen, eine pro Zeile. Datum (<code>24.11.2026</code>) und Uhrzeit (<code>09:00</code>) in der Zeile werden automatisch erkannt.</p>
+        </details>`;
+      foot.innerHTML = `<button class="btn" type="button" data-act="imp-cancel">Abbrechen</button><button class="btn primary" type="button" data-act="imp-next">Weiter</button>`;
+      return;
+    }
+
+    if (s.step === 'backup') {
+      body.innerHTML = `
+        <p>Sicherungsdatei${s.backupDate ? ` vom <b>${esc(fmtStamp(s.backupDate))}</b>` : ''} mit <b>${s.backup.tasks.length}</b> Erinnerungen erkannt.</p>
+        <p class="hint"><b>Zusammenführen</b> ergänzt fehlende Einträge und übernimmt neuere Stände – nichts geht verloren.<br><b>Alles ersetzen</b> stellt exakt den Stand der Sicherung wieder her (aktuelle Daten werden überschrieben).</p>`;
+      foot.innerHTML = `<button class="btn" type="button" data-act="imp-back">Zurück</button><span class="grow"></span>
+        <button class="btn danger" type="button" data-act="imp-replace">Alles ersetzen</button>
+        <button class="btn primary" type="button" data-act="imp-merge">Zusammenführen</button>`;
+      return;
+    }
+
+    // Vorschau
+    const total = s.cands.length;
+    const nDone = s.cands.filter((c) => c.done).length;
+    const toImport = s.includeDone ? total : total - nDone;
+    const mapping = s.kind === 'csv' ? `
+      <p class="hint">Spalten wurden automatisch zugeordnet – bei Bedarf anpassen. Ohne Erinnerungsdatum wird das Fälligkeitsdatum mit der Standard-Uhrzeit (${esc(data.settings.defaultTime)} Uhr) verwendet.</p>
+      <div class="map-grid">${IMPORT_FIELDS.map((f) => `<label>${esc(f.label)}<select data-map="${f.key}">
+        <option value="-1">– nicht verwenden –</option>
+        ${s.headers.map((h, i) => `<option value="${i}" ${s.mapping[f.key] === i ? 'selected' : ''}>${esc(h || `Spalte ${i + 1}`)}</option>`).join('')}
+      </select></label>`).join('')}</div>` : '';
+    const kindLabel = { csv: 'CSV-Datei', json: 'Microsoft-To-Do-Daten (Graph)', text: 'Text (eine Erinnerung pro Zeile)' }[s.kind];
+    body.innerHTML = `
+      <p>Erkannt: <b>${kindLabel}</b> – <b>${total}</b> Einträge (${total - nDone} offen, ${nDone} erledigt).</p>
+      ${s.more ? '<p class="error">Achtung: Die Antwort enthält „@odata.nextLink“ – es gibt weitere Aufgaben. Im Graph Explorer zusätzlich die nextLink-Adresse abrufen und danach auch importieren.</p>' : ''}
+      ${mapping}
+      <label class="set-row"><input type="checkbox" id="imp-done" ${s.includeDone ? 'checked' : ''}> Bereits erledigte Einträge mit importieren (erscheinen unter „Erledigt“)</label>
+      <table class="preview"><thead><tr><th>Titel</th><th>Erinnerung</th><th>Status</th><th>Bemerkung</th></tr></thead><tbody>
+        ${s.cands.slice(0, 100).map((c) => `<tr><td>${c.important ? '★ ' : ''}${esc(c.title)}</td><td>${c.remindAt ? esc(fmtWhen(c.remindAt)) : '<span class="hint">–</span>'}</td><td>${c.done ? 'erledigt' : 'offen'}</td><td class="note">${esc(c.notes[0]?.text || '')}</td></tr>`).join('')}
+      </tbody></table>
+      ${total > 100 ? `<p class="hint">… und ${total - 100} weitere.</p>` : ''}
+      ${!total ? '<p class="error">Keine Einträge mit Titel gefunden. Bitte die Spaltenzuordnung prüfen.</p>' : ''}
+      <p class="hint">Bereits vorhandene Erinnerungen (gleicher Titel und Zeitpunkt) werden übersprungen. Vergangene Erinnerungen landen unter „Überfällig“, ohne einzeln aufzupoppen.</p>`;
+    foot.innerHTML = `<button class="btn" type="button" data-act="imp-back">Zurück</button><span class="grow"></span>
+      <button class="btn primary" type="button" data-act="imp-commit" ${toImport ? '' : 'disabled'}>${toImport} Erinnerung${toImport === 1 ? '' : 'en'} importieren</button>`;
+  }
+
+  /* =====================================================================
+   * Einstellungen
+   * ===================================================================== */
+  function renderSettings() {
+    const s = data.settings;
+    let perm = '<span class="status-pill bad">nicht unterstützt</span>';
+    if (!window.isSecureContext) perm = '<span class="status-pill bad">nur über https möglich</span>';
+    else if ('Notification' in window) {
+      perm = { granted: '<span class="status-pill ok">aktiv</span>', denied: '<span class="status-pill bad">blockiert</span>', default: '<span class="status-pill">noch nicht erlaubt</span>' }[Notification.permission];
+    }
+    const last = data.meta.lastBackup ? fmtStamp(data.meta.lastBackup) : 'noch nie';
+    $('#settings-body').innerHTML = `
+      <div class="set-section">
+        <h3>Pop-up-Benachrichtigungen ${perm}</h3>
+        <p class="hint">Damit Erinnerungen pünktlich aufpoppen, muss diese Seite in einem Tab geöffnet bleiben (Tipp: Tab anheften – Rechtsklick auf den Tab → „Anheften“). Verpasste Erinnerungen erscheinen beim nächsten Öffnen sofort.</p>
+        <div class="set-row">
+          ${'Notification' in window && Notification.permission === 'default' && window.isSecureContext ? '<button class="btn primary" type="button" data-act="perm">Benachrichtigungen erlauben</button>' : ''}
+          <button class="btn" type="button" data-act="test-now">Test-Pop-up jetzt</button>
+          <button class="btn" type="button" data-act="test-1min">Test-Erinnerung in 1 Minute</button>
+        </div>
+        <p class="hint"><b>Edge:</b> Einstellungen → „System und Leistung“ → bei „Schlafende Registerkarten“ diese Seite zu „Diese Websites niemals in den Ruhezustand versetzen“ hinzufügen.<br>
+        <b>Chrome:</b> Einstellungen → „Leistung“ → „Arbeitsspeicher-Sparmodus“ → bei „Diese Websites immer aktiv lassen“ diese Seite hinzufügen.</p>
+      </div>
+      <div class="set-section">
+        <h3>Erinnerungen</h3>
+        <div class="set-row"><label for="s-deftime">Standard-Uhrzeit (z. B. für „Morgen“ oder Termine ohne Uhrzeit)</label><input class="field" type="time" id="s-deftime" value="${esc(s.defaultTime)}"></div>
+        <div class="set-row"><label for="s-sound">Ton abspielen, wenn eine Erinnerung fällig wird</label><input type="checkbox" id="s-sound" ${s.sound ? 'checked' : ''}></div>
+        <div class="set-row"><label for="s-summary">Tagesübersicht anzeigen (einmal am Tag, beim ersten Öffnen ab dieser Uhrzeit)</label><input type="checkbox" id="s-summary" ${s.summaryEnabled ? 'checked' : ''}><input class="field" type="time" id="s-sumtime" value="${esc(s.summaryTime)}"></div>
+      </div>
+      <div class="set-section">
+        <h3>Daten &amp; Sicherung</h3>
+        <p class="hint">Alle Erinnerungen liegen nur in diesem Browser auf diesem Rechner. Letzte Sicherung: <b>${esc(last)}</b>.</p>
+        <div class="set-row">
+          <button class="btn primary" type="button" data-act="backup">${ICON.download} Sicherung herunterladen</button>
+          <button class="btn" type="button" data-act="import">${ICON.upload} Importieren / Wiederherstellen</button>
+          <button class="btn" type="button" data-act="csv">Als Excel-Tabelle (CSV) exportieren</button>
+        </div>
+      </div>`;
+  }
+
+  /* =====================================================================
+   * Hinzufügen-Leiste
+   * ===================================================================== */
+  function setAddDefaults() {
+    const now = new Date();
+    let day = null;
+    if (ui.view === 'today' || ui.view === 'done') day = now;
+    else if (ui.view === 'planned') day = addDays(now, 1);
+    $('#add-date').value = day ? dateKey(day) : '';
+    let t = defTime();
+    if (day && dayDiff(day) === 0 && atTime(now, t.h, t.mi) <= now) {
+      const nh = new Date(now.getTime() + 60 * 60000);
+      t = { h: nh.getHours(), mi: 0 };
+      if (nh.getDate() !== now.getDate()) t = { h: 23, mi: 59 };
+    }
+    $('#add-time').value = day ? `${pad(t.h)}:${pad(t.mi)}` : '';
+  }
+
+  $('#add-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const title = $('#add-title').value.trim();
+    if (!title) { $('#add-title').focus(); return; }
+    const when = combine($('#add-date').value, $('#add-time').value);
+    const t = normalizeTask({ id: uid(), title, remindAt: when ? when.toISOString() : null });
+    data.tasks.push(t);
+    save();
+    $('#add-title').value = '';
+    if (ui.query) { ui.query = ''; $('#search').value = ''; }
+    render();
+    if (!isVisibleInView(t, ui.view)) {
+      toast(`Hinzugefügt${t.remindAt ? ` für ${fmtWhen(t.remindAt)} Uhr` : ''} – zu finden unter „${VIEWS[bestViewFor(t)].title}“`);
+    }
+    $('#add-title').focus();
+  });
+
+  $('#add-date').addEventListener('change', () => {
+    if ($('#add-date').value && !$('#add-time').value) $('#add-time').value = data.settings.defaultTime;
+  });
+
+  /* =====================================================================
+   * Ereignisse
+   * ===================================================================== */
+  function switchView(v) {
+    ui.view = v;
+    ui.query = '';
+    $('#search').value = '';
+    render();
+    setAddDefaults();
+  }
+
+  $('#nav').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-view]');
+    if (b) switchView(b.dataset.view);
+  });
+
+  $('#search').addEventListener('input', (e) => {
+    ui.query = e.target.value;
+    render();
+  });
+
+  $('#list').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]');
+    const row = e.target.closest('.task');
+    if (!b || !row) return;
+    const t = findTask(row.dataset.id);
+    if (!t) return;
+    if (b.dataset.act === 'toggle') toggleDone(t);
+    else if (b.dataset.act === 'star') toggleStar(t);
+    else if (b.dataset.act === 'open') {
+      if (ui.selectedId === t.id) closeDetail(); else openTask(t.id);
+    }
+  });
+
+  // Globale Knöpfe (Banner, Sidebar, Einstellungen)
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    switch (b.dataset.act) {
+      case 'perm': requestPermission(); break;
+      case 'backup': exportBackup(); break;
+      case 'backup-later': ui.backupBannerHidden = true; renderBanners(); break;
+      case 'csv': exportCSV(); break;
+      case 'import': if ($('#dlg-settings').open) $('#dlg-settings').close(); openImport(); break;
+      case 'settings': renderSettings(); $('#dlg-settings').showModal(); break;
+      case 'settings-close': $('#dlg-settings').close(); break;
+      case 'test-now': {
+        const ok = notify('Test-Erinnerung', { body: 'Wenn du das siehst, funktionieren die Pop-ups. 👍', tag: 'test' });
+        chime();
+        Promise.resolve(ok).then((r) => { if (!r) toast('Keine Windows-Benachrichtigung möglich – bitte Berechtigung prüfen.'); });
+        break;
+      }
+      case 'test-1min': {
+        const t = normalizeTask({ id: uid(), title: 'Test-Erinnerung (kann gelöscht werden)', remindAt: new Date(Date.now() + 60000).toISOString() });
+        data.tasks.push(t);
+        save();
+        render();
+        toast('Test-Erinnerung angelegt – in einer Minute sollte sie aufpoppen. Gern solange einen anderen Tab öffnen.');
+        $('#dlg-settings').close();
+        break;
+      }
+      default: break;
+    }
+  });
+
+  // Detailbereich
+  const detail = $('#detail');
+  detail.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const t = findTask(ui.selectedId);
+    if (!t) return;
+    switch (b.dataset.act) {
+      case 'toggle': toggleDone(t); break;
+      case 'star': toggleStar(t); break;
+      case 'close': closeDetail(); break;
+      case 'clear-remind': setReminder(t, null); render(); renderDetail(); break;
+      case 'snooze': snooze(t, b.dataset.key); break;
+      case 'note-add': addNote(t, $('#d-note').value); setTimeout(() => $('#d-note')?.focus(), 0); break;
+      case 'note-edit': ui.editingNoteId = b.closest('[data-note]').dataset.note; renderDetail(); break;
+      case 'note-cancel': ui.editingNoteId = null; renderDetail(); break;
+      case 'note-save': {
+        const n = t.notes.find((x) => x.id === ui.editingNoteId);
+        const val = $('#d-note-edit').value.trim();
+        if (n) { if (val) n.text = val; else t.notes.splice(t.notes.indexOf(n), 1); touch(t); save(); }
+        ui.editingNoteId = null;
+        render();
+        renderDetail();
+        break;
+      }
+      case 'note-del': {
+        const id = b.closest('[data-note]').dataset.note;
+        const idx = t.notes.findIndex((x) => x.id === id);
+        if (idx < 0) break;
+        const [removed] = t.notes.splice(idx, 1);
+        touch(t); save(); render(); renderDetail();
+        toast('Bemerkung gelöscht', () => { t.notes.splice(idx, 0, removed); touch(t); save(); render(); renderDetail(); });
+        break;
+      }
+      case 'delete': deleteTask(t); break;
+      default: break;
+    }
+  });
+
+  let listTimer = null;
+  detail.addEventListener('input', (e) => {
+    const t = findTask(ui.selectedId);
+    if (!t) return;
+    if (e.target.id === 'd-title') {
+      t.title = e.target.value.replace(/\n/g, ' ');
+      touch(t);
+      saveSoon();
+      clearTimeout(listTimer);
+      listTimer = setTimeout(renderList, 300);
+    }
+  });
+  detail.addEventListener('focusout', (e) => {
+    if (e.target.id === 'd-title') {
+      const t = findTask(ui.selectedId);
+      if (t) { t.title = t.title.trim() || '(ohne Titel)'; e.target.value = t.title; save(); renderList(); }
+    }
+  });
+  detail.addEventListener('change', (e) => {
+    const t = findTask(ui.selectedId);
+    if (!t) return;
+    if (e.target.id === 'd-date' || e.target.id === 'd-time') {
+      const dv = $('#d-date').value;
+      let tv = $('#d-time').value;
+      if (dv && !tv) { tv = data.settings.defaultTime; $('#d-time').value = tv; }
+      setReminder(t, dv ? combine(dv, tv) : null);
+      updateDetailStatus(t);
+      render();
+    }
+  });
+  detail.addEventListener('keydown', (e) => {
+    if (e.target.id === 'd-title' && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+    if (e.target.id === 'd-note' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      const t = findTask(ui.selectedId);
+      if (t) { addNote(t, e.target.value); setTimeout(() => $('#d-note')?.focus(), 0); }
+    }
+    if (e.target.id === 'd-note-edit' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      detail.querySelector('[data-act="note-save"]')?.click();
+    }
+  });
+
+  // Pop-up-Dialog
+  const dlgAlert = $('#dlg-alert');
+  dlgAlert.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    if (b.dataset.act === 'alert-close') {
+      ui.alertIds.slice().forEach((id) => closeSystemNotification(id));
+      ui.alertIds = [];
+      dlgAlert.close();
+      renderHeader();
+      return;
+    }
+    const item = b.closest('.alert-item');
+    const t = item && findTask(item.dataset.id);
+    if (!t) return;
+    if (b.dataset.act === 'a-done') toggleDone(t);
+    else if (b.dataset.act === 'a-snooze') snooze(t, b.dataset.key);
+    else if (b.dataset.act === 'a-open') {
+      removeAlert(t.id);
+      if (dlgAlert.open && !ui.alertIds.length) dlgAlert.close();
+      openTask(t.id, { focusNote: true });
+    }
+  });
+  dlgAlert.addEventListener('close', () => { ui.alertIds = []; renderHeader(); });
+
+  // Einstellungen
+  $('#dlg-settings').addEventListener('change', (e) => {
+    const s = data.settings;
+    switch (e.target.id) {
+      case 's-deftime': if (e.target.value) s.defaultTime = e.target.value; break;
+      case 's-sound': s.sound = e.target.checked; if (s.sound) { unlockAudio(); setTimeout(chime, 50); } break;
+      case 's-summary': s.summaryEnabled = e.target.checked; break;
+      case 's-sumtime': if (e.target.value) { s.summaryTime = e.target.value; data.meta.lastSummaryDate = null; } break;
+      default: return;
+    }
+    save();
+    setAddDefaults();
+  });
+
+  // Import-Dialog
+  const dlgImport = $('#dlg-import');
+  dlgImport.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    switch (b.dataset.act) {
+      case 'imp-cancel': dlgImport.close(); break;
+      case 'imp-next': analyzeImport($('#imp-text').value); renderImport(); break;
+      case 'imp-back': ui.imp = { step: 1, includeDone: ui.imp.includeDone, error: '' }; renderImport(); break;
+      case 'imp-commit': commitImport(); break;
+      case 'imp-merge': restoreBackup('merge'); break;
+      case 'imp-replace': restoreBackup('replace'); break;
+      default: break;
+    }
+  });
+  dlgImport.addEventListener('change', async (e) => {
+    if (e.target.id === 'imp-file' && e.target.files[0]) {
+      const file = e.target.files[0];
+      try { analyzeImport(await readFileText(file), file.name); }
+      catch (err) { ui.imp.error = `Datei konnte nicht gelesen werden: ${err.message}`; }
+      renderImport();
+    } else if (e.target.id === 'imp-done') {
+      ui.imp.includeDone = e.target.checked;
+      renderImport();
+    } else if (e.target.dataset.map) {
+      ui.imp.mapping[e.target.dataset.map] = Number(e.target.value);
+      buildCsvCands();
+      renderImport();
+    }
+  });
+
+  // Tastatur
+  document.addEventListener('keydown', (e) => {
+    const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
+    if (e.key === '/' && !inField && !document.querySelector('dialog[open]')) { e.preventDefault(); $('#search').focus(); }
+    else if (e.key === 'n' && !inField && !e.ctrlKey && !e.metaKey && !document.querySelector('dialog[open]')) { e.preventDefault(); $('#add-title').focus(); }
+    else if (e.key === 'Escape' && !document.querySelector('dialog[open]')) {
+      if (document.activeElement === $('#search') && ui.query) { ui.query = ''; $('#search').value = ''; render(); }
+      else if (ui.selectedId) closeDetail();
+    }
+  });
+
+  // Andere Tabs mit derselben App synchron halten
+  window.addEventListener('storage', (e) => {
+    if (e.key !== STORE_KEY) return;
+    data = load();
+    render();
+    if (ui.selectedId && !ui.editingNoteId && !detail.contains(document.activeElement)) renderDetail();
+  });
+
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(true); });
+  window.addEventListener('focus', () => tick(true));
+
+  /* =====================================================================
+   * Start
+   * ===================================================================== */
+  function handleHash() {
+    const h = location.hash.slice(1);
+    if (!h) return;
+    const p = new URLSearchParams(h);
+    history.replaceState(null, '', location.pathname + location.search);
+    const id = p.get('task');
+    if (id) handleNotifAction(p.get('action') || 'open', id);
+  }
+
+  try { navigator.storage?.persist?.(); } catch (_) { /* optional */ }
+  renderFoot();
+  render();
+  setAddDefaults();
+  handleHash();
+  tick(true);
+  setInterval(tick, 15000);
+})();
