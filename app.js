@@ -243,26 +243,18 @@
   function snoozeTarget(key) {
     const now = new Date();
     const { h, mi } = defTime();
-    const wd = /^wd([1-5])$/.exec(key);
-    if (wd) { // nächster Montag … Freitag (nie heute)
-      const delta = ((Number(wd[1]) - now.getDay() + 7) % 7) || 7;
-      return atTime(addDays(now, delta), h, mi);
-    }
     switch (key) {
       case 'tomorrow': return atTime(addDays(now, 1), h, mi);
       case '2days': return atTime(addDays(now, 2), h, mi);
       case '1week': return atTime(addDays(now, 7), h, mi);
-      case 'nextweek': return atTime(addDays(now, ((8 - now.getDay()) % 7) || 7), h, mi); // nächster Montag
       default: return null;
     }
   }
   const SNOOZES = [
     { key: 'tomorrow', label: 'Morgen' },
     { key: '2days', label: 'Übermorgen' },
-    { key: 'nextweek', label: 'Nächste Woche' },
     { key: '1week', label: 'In 1 Woche' },
   ];
-  const WEEKDAYS = [['wd1', 'Mo'], ['wd2', 'Di'], ['wd3', 'Mi'], ['wd4', 'Do'], ['wd5', 'Fr']];
 
   /* =====================================================================
    * Aktionen auf Erinnerungen
@@ -600,11 +592,30 @@
   }
 
   /* ---------- Detailbereich ---------- */
+  // Getippte, aber noch nicht hinzugefügte Bemerkung automatisch übernehmen, damit nichts verloren geht
+  function flushNoteDraft() {
+    const t = findTask(ui.detailId);
+    if (!t) return;
+    let changed = false;
+    const ed = $('#d-note-edit');
+    const n = ed && t.notes.find((x) => x.id === ui.editingNoteId);
+    if (n && ed.value.trim() && ed.value.trim() !== n.text) { n.text = ed.value.trim(); changed = true; }
+    const ta = $('#d-note');
+    if (ta && ta.value.trim()) {
+      t.notes.push({ id: uid(), at: nowIso(), text: ta.value.trim() });
+      ta.value = '';
+      changed = true;
+    }
+    if (changed) { touch(t); save(); toast('Bemerkung automatisch gespeichert'); }
+  }
+  window.addEventListener('pagehide', flushNoteDraft);
+
   function openTask(id, opts = {}) {
     const t = findTask(id);
     if (!t) return;
+    if (ui.detailId && ui.detailId !== id) flushNoteDraft();
     if (!ui.query.trim() && !isVisibleInView(t, ui.view)) ui.view = bestViewFor(t);
-    if (ui.selectedId !== id) ui.snoozeOpen = false; // Menü bei anderer Erinnerung wieder zuklappen
+    if (ui.selectedId !== id) { ui.snoozeOpen = false; ui.calOpen = false; } // Menüs bei anderer Erinnerung zuklappen
     ui.selectedId = id;
     ui.editingNoteId = null;
     render();
@@ -615,6 +626,8 @@
   }
 
   function closeDetail() {
+    flushNoteDraft();
+    ui.detailId = null;
     ui.selectedId = null;
     ui.editingNoteId = null;
     $('#detail').hidden = true;
@@ -625,19 +638,12 @@
   function renderDetail() {
     const el = $('#detail');
     const t = findTask(ui.selectedId);
-    if (!t) { el.hidden = true; el.innerHTML = ''; return; }
+    if (!t) { el.hidden = true; el.innerHTML = ''; ui.detailId = null; return; }
     el.hidden = false;
+    // Bereits getippten Bemerkungstext beim Neuaufbau behalten
+    const draft = ui.detailId === t.id ? ($('#d-note')?.value || '') : '';
 
     const d = t.remindAt ? new Date(t.remindAt) : null;
-    let status = 'Keine Erinnerung gesetzt.';
-    let statusCls = '';
-    if (d) {
-      const ts = d.getTime();
-      if (t.done) status = `Erinnerung war für ${fmtWhen(t.remindAt)} geplant.`;
-      else if (ts < startOfToday()) { status = `Überfällig seit ${fmtWhen(t.remindAt)}`; statusCls = 'overdue'; }
-      else if (ts <= Date.now()) status = `Fällig seit ${timeStr(d)} Uhr`;
-      else status = `Erinnert ${fmtWhen(t.remindAt)} Uhr`;
-    }
 
     const notes = [...t.notes].reverse().map((n) => {
       if (n.id === ui.editingNoteId) {
@@ -664,23 +670,15 @@
 
       <section class="card">
         <h3>${ICON.bell} Erinnerung</h3>
-        <div class="row">
+        ${whenHeroHtml(t)}
+        <div class="when-edit">
           <input class="field" type="date" id="d-date" value="${d ? dateKey(d) : ''}" aria-label="Datum">
           ${timeInput('d-time', d ? timeStr(d) : '', true)}
-          ${d ? `<button class="btn small" type="button" data-act="clear-remind">Entfernen</button>` : ''}
+          ${d ? `<button class="icon-btn small" type="button" data-act="clear-remind" title="Erinnerung entfernen">${ICON.close}</button>` : ''}
+          <span class="grow"></span>
+          <button class="snooze-toggle${ui.snoozeOpen ? ' open' : ''}" type="button" data-act="snooze-toggle" aria-expanded="${!!ui.snoozeOpen}">${ICON.calendar}Verschieben<svg viewBox="0 0 24 24" class="caret" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
         </div>
-        <div class="when-line">
-          <div class="when-status ${statusCls}" id="d-status">${esc(status)}</div>
-          <button class="snooze-toggle${ui.snoozeOpen ? ' open' : ''}" type="button" data-act="snooze-toggle" aria-expanded="${ui.snoozeOpen}">${ICON.calendar}Verschieben<svg viewBox="0 0 24 24" class="caret" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
-        </div>
-        <div class="snooze-menu" ${ui.snoozeOpen ? '' : 'hidden'}>
-          <div class="snooze-chips">
-            ${SNOOZES.map((s) => { const x = snoozeTarget(s.key); return `<button type="button" data-act="snooze" data-key="${s.key}" title="${esc(fmtWhen(x.toISOString()))} Uhr">${s.label}<small>${pad(x.getDate())}.${pad(x.getMonth() + 1)}.</small></button>`; }).join('')}
-          </div>
-          <div class="snooze-chips wd" aria-label="Auf Wochentag verschieben">
-            ${WEEKDAYS.map(([k, l]) => { const x = snoozeTarget(k); return `<button type="button" data-act="snooze" data-key="${k}" title="${esc(fmtWhen(x.toISOString()))} Uhr">${l}<small>${pad(x.getDate())}.${pad(x.getMonth() + 1)}.</small></button>`; }).join('')}
-          </div>
-        </div>
+        <div class="snooze-menu" ${ui.snoozeOpen ? '' : 'hidden'}>${snoozeMenuInner(t)}</div>
       </section>
 
       <section class="card">
@@ -695,17 +693,93 @@
         <button class="btn small danger" type="button" data-act="delete">${ICON.trash} Löschen</button>
       </div>`;
 
+    ui.detailId = t.id;
+    if (draft) $('#d-note').value = draft;
     if (ui.editingNoteId) setTimeout(() => { const ta = $('#d-note-edit'); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } }, 0);
+  }
+
+  const fmtMonShort = new Intl.DateTimeFormat('de-DE', { month: 'short' });
+  const fmtMonthYear = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' });
+
+  // Großes Datumsfeld („Kalenderblatt“) für den aktuellen Erinnerungstermin
+  function whenHeroHtml(t) {
+    if (!t.remindAt) {
+      return `<div class="when-hero none" id="d-when"><div class="leaf"><span>–</span><b>?</b></div>
+        <div class="when-main"><b>Keine Erinnerung</b><span>Datum unten wählen oder „Verschieben“ nutzen.</span></div></div>`;
+    }
+    const d = new Date(t.remindAt);
+    const ts = d.getTime();
+    const diff = dayDiff(d);
+    let rel;
+    let cls = '';
+    if (t.done) { rel = 'erledigt'; cls = 'done'; }
+    else if (ts < startOfToday()) { rel = `überfällig seit ${-diff} Tag${diff === -1 ? '' : 'en'}`; cls = 'overdue'; }
+    else if (ts <= Date.now()) { rel = 'jetzt fällig'; cls = 'due'; }
+    else rel = { 0: 'heute', 1: 'morgen', 2: 'übermorgen' }[diff] || `in ${diff} Tagen`;
+    const dateTxt = (d.getFullYear() === new Date().getFullYear() ? fmtLong : fmtLongY).format(d);
+    return `<div class="when-hero ${cls}" id="d-when">
+      <div class="leaf"><span>${esc(fmtMonShort.format(d).replace('.', ''))}</span><b>${d.getDate()}</b></div>
+      <div class="when-main"><b>${esc(dateTxt)}</b><span>${timeStr(d)} Uhr<em class="rel">${esc(rel)}</em></span></div>
+    </div>`;
+  }
+
+  function snoozeMenuInner(t) {
+    const chips = SNOOZES.map((s) => {
+      const x = snoozeTarget(s.key);
+      return `<button type="button" data-act="snooze" data-key="${s.key}" title="${esc(fmtWhen(x.toISOString()))} Uhr">${s.label}<small>${pad(x.getDate())}.${pad(x.getMonth() + 1)}.</small></button>`;
+    }).join('');
+    return `<div class="snooze-chips">${chips}
+        <button type="button" data-act="cal-toggle" class="cal-chip${ui.calOpen ? ' on' : ''}">${ICON.calendar}Kalender</button>
+      </div>
+      ${ui.calOpen ? calHtml(t) : ''}
+      <p class="snooze-hint">Neuer Termin jeweils um ${esc(data.settings.defaultTime)} Uhr (Standard-Uhrzeit).</p>`;
+  }
+
+  // Monatskalender zum längerfristigen Verschieben
+  function calHtml(t) {
+    if (!ui.calMonth) ui.calMonth = new Date();
+    const m = new Date(ui.calMonth.getFullYear(), ui.calMonth.getMonth(), 1);
+    const sel = t.remindAt ? dateKey(new Date(t.remindAt)) : '';
+    const todayKey = dateKey(new Date());
+    const offset = (m.getDay() + 6) % 7; // Montag zuerst
+    const daysInMonth = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
+    const weeks = Math.ceil((offset + daysInMonth) / 7);
+    const start = addDays(m, -offset);
+    const thisMonth = new Date(); thisMonth.setDate(1); thisMonth.setHours(0, 0, 0, 0);
+    let cells = '';
+    for (let i = 0; i < weeks * 7; i++) {
+      const day = addDays(start, i);
+      const key = dateKey(day);
+      const cls = [
+        day.getMonth() !== m.getMonth() ? 'other' : '',
+        key === todayKey ? 'today' : '',
+        key === sel ? 'sel' : '',
+        (i % 7) >= 5 ? 'we' : '',
+      ].filter(Boolean).join(' ');
+      const past = key < todayKey;
+      cells += `<button type="button" class="${cls}" data-act="cal-pick" data-date="${key}"${past ? ' disabled' : ''} title="${esc(fmtLongY.format(day))}">${day.getDate()}</button>`;
+    }
+    return `<div class="cal">
+      <div class="cal-head">
+        <button type="button" class="icon-btn small" data-act="cal-prev" title="Vorheriger Monat"${m <= thisMonth ? ' disabled' : ''}><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <b>${esc(fmtMonthYear.format(m))}</b>
+        <button type="button" class="icon-btn small" data-act="cal-next" title="Nächster Monat"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+      </div>
+      <div class="cal-grid cal-wd"><span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span></div>
+      <div class="cal-grid">${cells}</div>
+    </div>`;
+  }
+
+  function renderSnoozeMenu(t) {
+    const menu = $('#detail .snooze-menu');
+    if (menu) menu.innerHTML = snoozeMenuInner(t);
   }
 
   function updateDetailStatus(t) {
     // kleine Aktualisierung ohne kompletten Neuaufbau (z. B. während Datumseingabe)
-    const st = $('#d-status');
-    if (!st) return;
-    if (!t.remindAt) { st.textContent = 'Keine Erinnerung gesetzt.'; st.className = 'when-status'; return; }
-    const ts = Date.parse(t.remindAt);
-    st.className = 'when-status' + (ts < startOfToday() && !t.done ? ' overdue' : '');
-    st.textContent = ts <= Date.now() ? `Fällig seit ${fmtWhen(t.remindAt)} Uhr` : `Erinnert ${fmtWhen(t.remindAt)} Uhr`;
+    const el = $('#d-when');
+    if (el) el.outerHTML = whenHeroHtml(t);
+    if (ui.snoozeOpen) renderSnoozeMenu(t);
   }
 
   /* =====================================================================
@@ -836,7 +910,7 @@
           <button class="btn primary small" type="button" data-act="a-done">${ICON.check} Erledigt</button>
           <button class="btn small" type="button" data-act="a-snooze" data-key="tomorrow">Morgen</button>
           <button class="btn small" type="button" data-act="a-snooze" data-key="2days">Übermorgen</button>
-          <button class="btn small" type="button" data-act="a-snooze" data-key="nextweek">Nächste Woche</button>
+          <button class="btn small" type="button" data-act="a-snooze" data-key="1week">In 1 Woche</button>
           <button class="btn small" type="button" data-act="a-open">Öffnen / Bemerkung</button>
         </div>
       </div>`;
@@ -1729,7 +1803,30 @@
       case 'star': toggleStar(t); break;
       case 'close': closeDetail(); break;
       case 'clear-remind': setReminder(t, null); render(); renderDetail(); break;
-      case 'snooze': ui.snoozeOpen = false; snooze(t, b.dataset.key); break;
+      case 'snooze': ui.snoozeOpen = false; ui.calOpen = false; snooze(t, b.dataset.key); break;
+      case 'cal-toggle':
+        ui.calOpen = !ui.calOpen;
+        if (ui.calOpen) ui.calMonth = t.remindAt && Date.parse(t.remindAt) > Date.now() ? new Date(t.remindAt) : new Date();
+        renderSnoozeMenu(t);
+        break;
+      case 'cal-prev':
+      case 'cal-next':
+        ui.calMonth = new Date(ui.calMonth.getFullYear(), ui.calMonth.getMonth() + (b.dataset.act === 'cal-next' ? 1 : -1), 1);
+        renderSnoozeMenu(t);
+        break;
+      case 'cal-pick': {
+        const when = combine(b.dataset.date, data.settings.defaultTime);
+        if (!when) break;
+        if (t.done) { t.done = false; t.doneAt = null; }
+        setReminder(t, when);
+        ui.snoozeOpen = false;
+        ui.calOpen = false;
+        removeAlert(t.id);
+        render();
+        renderDetail();
+        toast(`Verschoben auf ${fmtWhen(t.remindAt)} Uhr`);
+        break;
+      }
       case 'snooze-toggle': {
         ui.snoozeOpen = !ui.snoozeOpen;
         const menu = detail.querySelector('.snooze-menu');
@@ -1738,7 +1835,7 @@
         b.setAttribute('aria-expanded', String(ui.snoozeOpen));
         break;
       }
-      case 'note-add': addNote(t, $('#d-note').value); setTimeout(() => $('#d-note')?.focus(), 0); break;
+      case 'note-add': { const v = $('#d-note').value; $('#d-note').value = ''; addNote(t, v); setTimeout(() => $('#d-note')?.focus(), 0); break; }
       case 'note-edit': ui.editingNoteId = b.closest('[data-note]').dataset.note; renderDetail(); break;
       case 'note-cancel': ui.editingNoteId = null; renderDetail(); break;
       case 'note-save': {
@@ -1799,7 +1896,7 @@
     if (e.target.id === 'd-note' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       const t = findTask(ui.selectedId);
-      if (t) { addNote(t, e.target.value); setTimeout(() => $('#d-note')?.focus(), 0); }
+      if (t) { const v = e.target.value; e.target.value = ''; addNote(t, v); setTimeout(() => $('#d-note')?.focus(), 0); }
     }
     if (e.target.id === 'd-note-edit' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
