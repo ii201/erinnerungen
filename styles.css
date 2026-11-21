@@ -668,3 +668,28 @@ dialog::backdrop { background: rgba(10, 10, 25, .45); backdrop-filter: blur(6px)
 .time-pop button:hover, .time-pop button.active { background: var(--accent-soft); color: var(--accent-text); }
 .time-pop button.on { font-weight: 700; color: var(--accent-text); }
 .time-pop button.on::after { content: "  ✓"; }
+
+/* Verschieben: aufklappbares, kompaktes Menü */
+.when-line { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.when-line .when-status { margin-top: 0; flex: 1; }
+.snooze-toggle {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 9px;
+  border: 1px solid var(--border-strong); background: var(--surface); font-size: 12.5px; font-weight: 600; color: var(--text-2);
+  transition: all .15s var(--ease);
+}
+.snooze-toggle svg { width: 14px; height: 14px; }
+.snooze-toggle .caret { transition: transform .2s var(--ease); }
+.snooze-toggle:hover, .snooze-toggle.open { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
+.snooze-toggle.open .caret { transform: rotate(180deg); }
+.snooze-menu { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); animation: rise .2s var(--ease); }
+.snooze-menu[hidden] { display: none; }
+.snooze-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.snooze-chips + .snooze-chips { margin-top: 6px; }
+.snooze-chips button {
+  display: inline-flex; align-items: baseline; gap: 5px; height: 28px; padding: 0 10px; border-radius: 99px;
+  border: 1px solid var(--border); background: var(--surface-2); font-size: 12.5px; font-weight: 600; color: var(--text-2);
+  transition: all .15s var(--ease); line-height: 26px;
+}
+.snooze-chips button small { font-size: 11px; font-weight: 400; color: var(--muted); }
+.snooze-chips button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.snooze-chips.wd button { min-width: 0; }

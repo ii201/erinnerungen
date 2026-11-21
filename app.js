@@ -604,6 +604,7 @@
     const t = findTask(id);
     if (!t) return;
     if (!ui.query.trim() && !isVisibleInView(t, ui.view)) ui.view = bestViewFor(t);
+    if (ui.selectedId !== id) ui.snoozeOpen = false; // Menü bei anderer Erinnerung wieder zuklappen
     ui.selectedId = id;
     ui.editingNoteId = null;
     render();
@@ -668,12 +669,17 @@
           ${timeInput('d-time', d ? timeStr(d) : '', true)}
           ${d ? `<button class="btn small" type="button" data-act="clear-remind">Entfernen</button>` : ''}
         </div>
-        <div class="when-status ${statusCls}" id="d-status">${esc(status)}</div>
-        <div class="snooze">
-          ${SNOOZES.map((s) => { const x = snoozeTarget(s.key); return `<button type="button" data-act="snooze" data-key="${s.key}">${s.label}<small>${esc(fmtWhen(x.toISOString()))}</small></button>`; }).join('')}
+        <div class="when-line">
+          <div class="when-status ${statusCls}" id="d-status">${esc(status)}</div>
+          <button class="snooze-toggle${ui.snoozeOpen ? ' open' : ''}" type="button" data-act="snooze-toggle" aria-expanded="${ui.snoozeOpen}">${ICON.calendar}Verschieben<svg viewBox="0 0 24 24" class="caret" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
         </div>
-        <div class="weekdays" aria-label="Auf Wochentag verschieben">
-          ${WEEKDAYS.map(([k, l]) => { const x = snoozeTarget(k); return `<button type="button" data-act="snooze" data-key="${k}" title="${esc(fmtWhen(x.toISOString()))} Uhr">${l}<small>${pad(x.getDate())}.${pad(x.getMonth() + 1)}.</small></button>`; }).join('')}
+        <div class="snooze-menu" ${ui.snoozeOpen ? '' : 'hidden'}>
+          <div class="snooze-chips">
+            ${SNOOZES.map((s) => { const x = snoozeTarget(s.key); return `<button type="button" data-act="snooze" data-key="${s.key}" title="${esc(fmtWhen(x.toISOString()))} Uhr">${s.label}<small>${pad(x.getDate())}.${pad(x.getMonth() + 1)}.</small></button>`; }).join('')}
+          </div>
+          <div class="snooze-chips wd" aria-label="Auf Wochentag verschieben">
+            ${WEEKDAYS.map(([k, l]) => { const x = snoozeTarget(k); return `<button type="button" data-act="snooze" data-key="${k}" title="${esc(fmtWhen(x.toISOString()))} Uhr">${l}<small>${pad(x.getDate())}.${pad(x.getMonth() + 1)}.</small></button>`; }).join('')}
+          </div>
         </div>
       </section>
 
@@ -1723,7 +1729,15 @@
       case 'star': toggleStar(t); break;
       case 'close': closeDetail(); break;
       case 'clear-remind': setReminder(t, null); render(); renderDetail(); break;
-      case 'snooze': snooze(t, b.dataset.key); break;
+      case 'snooze': ui.snoozeOpen = false; snooze(t, b.dataset.key); break;
+      case 'snooze-toggle': {
+        ui.snoozeOpen = !ui.snoozeOpen;
+        const menu = detail.querySelector('.snooze-menu');
+        if (menu) menu.hidden = !ui.snoozeOpen;
+        b.classList.toggle('open', ui.snoozeOpen);
+        b.setAttribute('aria-expanded', String(ui.snoozeOpen));
+        break;
+      }
       case 'note-add': addNote(t, $('#d-note').value); setTimeout(() => $('#d-note')?.focus(), 0); break;
       case 'note-edit': ui.editingNoteId = b.closest('[data-note]').dataset.note; renderDetail(); break;
       case 'note-cancel': ui.editingNoteId = null; renderDetail(); break;
