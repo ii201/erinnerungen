@@ -144,7 +144,7 @@
   function applyTheme() {
     const forced = URLP.get('theme');
     const key = THEMES.some((t) => t.key === forced) ? forced : data.settings.theme;
-    document.documentElement.dataset.theme = THEMES.some((t) => t.key === key) ? key : 'messing';
+    document.documentElement.dataset.theme = THEMES.some((t) => t.key === key) ? key : 'marine';
   }
   applyTheme();
 

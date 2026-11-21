@@ -23,7 +23,7 @@
 }
 
 /* ---------- Graphit & Messing (hell) ---------- */
-:root, [data-theme="messing"] {
+[data-theme="messing"] {
   --font-hero: "Instrument Serif", Georgia, "Times New Roman", serif;
   --hero-weight: 400;
   --hero-tracking: -.01em;
@@ -104,7 +104,7 @@
 
 @media (prefers-color-scheme: dark) {
   /* ---------- Graphit & Messing (dunkel) ---------- */
-  :root, [data-theme="messing"] {
+  [data-theme="messing"] {
     --font-hero: "Instrument Serif", Georgia, "Times New Roman", serif;
     --hero-weight: 400;
     --hero-tracking: -.01em;

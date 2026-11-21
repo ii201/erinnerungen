@@ -45,7 +45,7 @@
       { key: 'marine', name: 'Marineblau', desc: 'Klassisch und seriös: Marineblau, kühles Grau und klare Sans-Serif-Schrift.', sw: ['#1d3557', '#2c64a6', '#f2f4f7'], btn: '#1d3557' },
     ];
     const KEY = 'erinnerungen-app-v1';
-    const current = () => { try { return JSON.parse(localStorage.getItem(KEY) || '{}').settings?.theme || 'messing'; } catch (_) { return 'messing'; } };
+    const current = () => { try { return JSON.parse(localStorage.getItem(KEY) || '{}').settings?.theme || 'marine'; } catch (_) { return 'marine'; } };
 
     function render() {
       const cur = current();
