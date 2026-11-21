@@ -134,6 +134,20 @@
 
   let data = load();
 
+  /* ---------- Farbschema ---------- */
+  const THEMES = [
+    { key: 'messing', name: 'Graphit & Messing', desc: 'Warm und edel, mit Serifen-Überschriften', sw: ['#1b1a17', '#9a7b4f', '#f3f1ec'] },
+    { key: 'marine', name: 'Marineblau', desc: 'Klassisch, kühl und seriös', sw: ['#1d3557', '#2c64a6', '#f2f4f7'] },
+  ];
+  const URLP = new URLSearchParams(location.search);
+  const PREVIEW = URLP.has('preview'); // Vergleichsansicht: nur anzeigen, nichts auslösen
+  function applyTheme() {
+    const forced = URLP.get('theme');
+    const key = THEMES.some((t) => t.key === forced) ? forced : data.settings.theme;
+    document.documentElement.dataset.theme = THEMES.some((t) => t.key === key) ? key : 'messing';
+  }
+  applyTheme();
+
   function save(opts = {}) {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(data));
@@ -206,29 +220,26 @@
   function snoozeTarget(key) {
     const now = new Date();
     const { h, mi } = defTime();
-    const inMin = (n) => { const d = new Date(now.getTime() + n * 60000); d.setSeconds(0, 0); return d; };
+    const wd = /^wd([1-5])$/.exec(key);
+    if (wd) { // nächster Montag … Freitag (nie heute)
+      const delta = ((Number(wd[1]) - now.getDay() + 7) % 7) || 7;
+      return atTime(addDays(now, delta), h, mi);
+    }
     switch (key) {
-      case '15m': return inMin(15);
-      case '1h': return inMin(60);
-      case '3h': return inMin(180);
       case 'tomorrow': return atTime(addDays(now, 1), h, mi);
       case '2days': return atTime(addDays(now, 2), h, mi);
-      case 'nextweek': {
-        const dow = now.getDay(); // 0 = So
-        const delta = ((8 - dow) % 7) || 7; // nächster Montag
-        return atTime(addDays(now, delta), h, mi);
-      }
+      case '1week': return atTime(addDays(now, 7), h, mi);
+      case 'nextweek': return atTime(addDays(now, ((8 - now.getDay()) % 7) || 7), h, mi); // nächster Montag
       default: return null;
     }
   }
   const SNOOZES = [
-    { key: '15m', label: '+15 Minuten' },
-    { key: '1h', label: '+1 Stunde' },
-    { key: '3h', label: '+3 Stunden' },
     { key: 'tomorrow', label: 'Morgen' },
     { key: '2days', label: 'Übermorgen' },
     { key: 'nextweek', label: 'Nächste Woche' },
+    { key: '1week', label: 'In 1 Woche' },
   ];
+  const WEEKDAYS = [['wd1', 'Mo'], ['wd2', 'Di'], ['wd3', 'Mi'], ['wd4', 'Do'], ['wd5', 'Fr']];
 
   /* =====================================================================
    * Aktionen auf Erinnerungen
@@ -638,6 +649,9 @@
         <div class="snooze">
           ${SNOOZES.map((s) => { const x = snoozeTarget(s.key); return `<button type="button" data-act="snooze" data-key="${s.key}">${s.label}<small>${esc(fmtWhen(x.toISOString()))}</small></button>`; }).join('')}
         </div>
+        <div class="weekdays" aria-label="Auf Wochentag verschieben">
+          ${WEEKDAYS.map(([k, l]) => { const x = snoozeTarget(k); return `<button type="button" data-act="snooze" data-key="${k}" title="${esc(fmtWhen(x.toISOString()))} Uhr">${l}<small>${pad(x.getDate())}.${pad(x.getMonth() + 1)}.</small></button>`; }).join('')}
+        </div>
       </section>
 
       <section class="card">
@@ -711,7 +725,7 @@
       const reg = swReg || (navigator.serviceWorker && await navigator.serviceWorker.getRegistration());
       if (reg && reg.showNotification) {
         const o = { ...base };
-        if (opts.id) o.actions = [{ action: 'done', title: 'Erledigt' }, { action: 'snooze', title: 'In 1 Std. erneut' }];
+        if (opts.id) o.actions = [{ action: 'done', title: 'Erledigt' }, { action: 'snooze', title: 'Morgen erinnern' }];
         await reg.showNotification(title, o);
         return true;
       }
@@ -735,7 +749,7 @@
     const t = id && findTask(id);
     if (!t) { window.focus(); return; }
     if (action === 'done') { if (!t.done) toggleDone(t); }
-    else if (action === 'snooze') snooze(t, '1h');
+    else if (action === 'snooze') snooze(t, 'tomorrow');
     else openTask(id);
   }
 
@@ -791,9 +805,8 @@
         ${last ? `<div class="alert-note">Letzte Bemerkung (${esc(fmtStamp(last.at))}): ${esc(last.text)}</div>` : ''}
         <div class="alert-actions">
           <button class="btn primary small" type="button" data-act="a-done">${ICON.check} Erledigt</button>
-          <button class="btn small" type="button" data-act="a-snooze" data-key="15m">+15 Min</button>
-          <button class="btn small" type="button" data-act="a-snooze" data-key="1h">+1 Std</button>
           <button class="btn small" type="button" data-act="a-snooze" data-key="tomorrow">Morgen</button>
+          <button class="btn small" type="button" data-act="a-snooze" data-key="2days">Übermorgen</button>
           <button class="btn small" type="button" data-act="a-snooze" data-key="nextweek">Nächste Woche</button>
           <button class="btn small" type="button" data-act="a-open">Öffnen / Bemerkung</button>
         </div>
@@ -1460,6 +1473,15 @@
     const last = data.meta.lastBackup ? fmtStamp(data.meta.lastBackup) : 'noch nie';
     $('#settings-body').innerHTML = `
       <div class="set-section">
+        <h3>Farbschema</h3>
+        <div class="theme-grid">${THEMES.map((th) => `
+          <button type="button" class="theme-opt${document.documentElement.dataset.theme === th.key ? ' on' : ''}" data-act="theme" data-theme-key="${th.key}">
+            <span class="swatches">${th.sw.map((c) => `<i style="background:${c}"></i>`).join('')}</span>
+            <span><b>${esc(th.name)}</b><br><small>${esc(th.desc)}</small></span>
+          </button>`).join('')}
+        </div>
+      </div>
+      <div class="set-section">
         <h3>Pop-ups &amp; Windows-Benachrichtigungen ${perm}</h3>
         <p class="hint">Erinnerungen poppen hier in der App als Fenster mit Ton auf. Dafür muss die Seite in einem Tab geöffnet bleiben (Tipp: Rechtsklick auf den Tab → „Anheften“). Sind Windows-Benachrichtigungen erlaubt, erscheint zusätzlich unten rechts ein Hinweis, auch wenn ein anderes Programm im Vordergrund ist. Verpasste Erinnerungen erscheinen beim nächsten Öffnen sofort.</p>
         <div class="set-row">
@@ -1609,6 +1631,12 @@
       case 'backup': exportBackup(); break;
       case 'backup-later': ui.backupBannerHidden = true; renderBanners(); break;
       case 'hide-notif': data.settings.hideNotifBanner = true; save({ noSync: true }); renderBanners(); break;
+      case 'theme':
+        data.settings.theme = b.dataset.themeKey;
+        save({ noSync: true });
+        applyTheme();
+        if ($('#dlg-settings').open) renderSettings();
+        break;
       case 'gh-sync': ghSync(true); break;
       case 'gh-connect': {
         const repo = parseRepo($('#gh-repo').value);
@@ -1827,6 +1855,7 @@
   window.addEventListener('storage', (e) => {
     if (e.key !== STORE_KEY) return;
     data = load();
+    applyTheme();
     render();
     if (ui.selectedId && !ui.editingNoteId && !detail.contains(document.activeElement)) renderDetail();
   });
@@ -1849,14 +1878,16 @@
     if (id) handleNotifAction(p.get('action') || 'open', id);
   }
 
-  try { navigator.storage?.persist?.(); } catch (_) { /* optional */ }
   renderFoot();
   render();
   setAddDefaults();
+  renderSyncStatus();
+  if (PREVIEW) return; // Vergleichsansicht: keine Pop-ups, keine Synchronisation
+
+  try { navigator.storage?.persist?.(); } catch (_) { /* optional */ }
   handleHash();
   tick(true);
   setInterval(tick, 15000);
-  renderSyncStatus();
   ghSync(true); // beim Start Stand von GitHub holen und zusammenführen
   setInterval(() => ghSync(true), 10 * 60000);
 })();

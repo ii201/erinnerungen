@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Farbschema wählen – Erinnerungen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Instrument+Serif&display=swap">
+  <style>
+    :root { --bg: #ecebe7; --text: #1b1a17; --muted: #6f6a60; --card: #fff; --border: rgba(0,0,0,.08); color-scheme: light; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #0f0f0e; --text: #eeeae2; --muted: #9a9384; --card: #191816; --border: rgba(255,255,255,.08); color-scheme: dark; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 "Geist", "Segoe UI", system-ui, sans-serif; }
+    header { max-width: 1600px; margin: 0 auto; padding: 36px 24px 8px; }
+    h1 { font: 400 44px/1.05 "Instrument Serif", Georgia, serif; margin: 0 0 6px; letter-spacing: -.01em; }
+    header p { margin: 0; color: var(--muted); }
+    main { max-width: 1600px; margin: 0 auto; padding: 20px 24px 48px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 24px; }
+    .opt { background: var(--card); border: 1px solid var(--border); border-radius: 20px; overflow: hidden; box-shadow: 0 20px 50px -20px rgba(0,0,0,.25); }
+    .frame { position: relative; width: 100%; aspect-ratio: 1440 / 900; overflow: hidden; border-bottom: 1px solid var(--border); }
+    .frame iframe { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; border: 0; transform-origin: 0 0; pointer-events: none; }
+    .info { display: flex; align-items: center; gap: 16px; padding: 18px 20px; flex-wrap: wrap; }
+    .info h2 { margin: 0; font-size: 18px; font-weight: 650; }
+    .info p { margin: 2px 0 0; color: var(--muted); font-size: 13.5px; }
+    .info .grow { flex: 1; min-width: 220px; }
+    .sw { display: flex; gap: 6px; }
+    .sw i { width: 24px; height: 24px; border-radius: 7px; border: 1px solid rgba(0,0,0,.1); }
+    button { font: 600 14px "Geist", "Segoe UI", sans-serif; height: 40px; padding: 0 18px; border-radius: 11px; border: 0; cursor: pointer; color: #fff; }
+    button.ok { background: #3f7d5c !important; }
+    .note { max-width: 1600px; margin: 0 auto; padding: 0 24px 40px; color: var(--muted); font-size: 13.5px; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Welches Farbschema gefällt dir?</h1>
+    <p>Beide Vorschauen zeigen deine echten Erinnerungen. Hell und dunkel richtet sich nach der Windows-Einstellung.</p>
+  </header>
+  <main id="opts"></main>
+  <p class="note">Später jederzeit änderbar unter <i>Einstellungen → Farbschema</i>. <a href="./">Zurück zur App</a></p>
+
+  <script>
+    const THEMES = [
+      { key: 'messing', name: 'Graphit & Messing', desc: 'Warm und edel: Graphit, gebrochenes Weiß und Messing-Akzente, Überschriften in Serifenschrift.', sw: ['#1b1a17', '#9a7b4f', '#f3f1ec'], btn: '#1b1a17' },
+      { key: 'marine', name: 'Marineblau', desc: 'Klassisch und seriös: Marineblau, kühles Grau und klare Sans-Serif-Schrift.', sw: ['#1d3557', '#2c64a6', '#f2f4f7'], btn: '#1d3557' },
+    ];
+    const KEY = 'erinnerungen-app-v1';
+    const current = () => { try { return JSON.parse(localStorage.getItem(KEY) || '{}').settings?.theme || 'messing'; } catch (_) { return 'messing'; } };
+
+    function render() {
+      const cur = current();
+      document.getElementById('opts').innerHTML = THEMES.map((t) => `
+        <section class="opt">
+          <div class="frame"><iframe src="./?preview&theme=${t.key}" title="Vorschau ${t.name}" tabindex="-1" loading="lazy"></iframe></div>
+          <div class="info">
+            <span class="sw">${t.sw.map((c) => `<i style="background:${c}"></i>`).join('')}</span>
+            <div class="grow"><h2>${t.name}</h2><p>${t.desc}</p></div>
+            <button type="button" data-key="${t.key}" class="${cur === t.key ? 'ok' : ''}" style="background:${t.btn}">${cur === t.key ? '✓ Ausgewählt' : 'Dieses nehmen'}</button>
+          </div>
+        </section>`).join('');
+      fit();
+    }
+
+    function fit() {
+      document.querySelectorAll('.frame').forEach((f) => { f.querySelector('iframe').style.transform = `scale(${f.clientWidth / 1440})`; });
+    }
+
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-key]');
+      if (!b) return;
+      try {
+        const d = JSON.parse(localStorage.getItem(KEY) || '{}');
+        d.settings = { ...(d.settings || {}), theme: b.dataset.key };
+        localStorage.setItem(KEY, JSON.stringify(d));
+      } catch (_) { alert('Konnte nicht gespeichert werden – bitte in der App unter Einstellungen wählen.'); }
+      render();
+    });
+    window.addEventListener('resize', fit);
+    render();
+  </script>
+</body>
+</html>

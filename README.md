@@ -7,7 +7,9 @@ Es wird nichts installiert und nichts an Windows verändert.
 
 - Erinnerungen mit Datum und Uhrzeit anlegen
 - **Pop-up zur Erinnerungszeit**: als Windows-Benachrichtigung und als Fenster in der App, mit Ton
-- Direkt im Pop-up: *Erledigt*, *+15 Min*, *+1 Std*, *Morgen*, *Nächste Woche* oder *Öffnen*
+- Direkt im Pop-up: *Erledigt*, *Morgen*, *Übermorgen*, *Nächste Woche* oder *Öffnen*
+- Verschieben tageweise: Morgen, Übermorgen, nächste Woche, in 1 Woche oder auf einen Wochentag (Mo–Fr), immer zur Standard-Uhrzeit
+- Zwei Farbschemata: *Graphit & Messing* und *Marineblau* (Vergleich unter `vorschau.html`)
 - **Bemerkungen & Verlauf**: Jede Aktualisierung wird mit Datum und Uhrzeit gespeichert
 - Ansichten: **Heute** (inkl. Überfällige), **Geplant** (Zukunft), **Alle offenen**, **Erledigt**
 - **Suche** in Titeln und Bemerkungen, offen und erledigt
